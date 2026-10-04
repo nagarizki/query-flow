@@ -243,7 +243,12 @@ function renderGroups(): void {
           try {
             await collectQuery(
               (offset, limit, iteration) => pending = chrome.runtime.sendMessage({ type: "RUN_SQL_FILE", path: file.path, tabId: tab.id!, runId, offset, limit, iteration } satisfies ExtensionMessage) as Promise<SqlChunkResponse>,
-              (columns, rows) => output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows }),
+              async (columns, rows) => {
+                await output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows });
+                if (output.needsIntermediateFlush) {
+                  await output.flushIntermediate((message) => { batchStatus.textContent = message; });
+                }
+              },
               () => batchStopRequested,
               (message) => { batchStatus.textContent = message; },
               batchController.signal,
@@ -255,6 +260,7 @@ function renderGroups(): void {
             // Keep the Stop action available between files and while exporting.
           }
         }
+        batchStatus.textContent = `Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
         await output.flush(true);
         batchStatus.textContent = `Selesai: ${output.totalRows.toLocaleString("id-ID")} baris · ${output.parts} file Excel diunduh.`;
       } catch (error) {
@@ -332,11 +338,17 @@ function renderGroups(): void {
           run.classList.add("stop-button");
           await collectQuery(
             (offset, limit, iteration) => pending = chrome.runtime.sendMessage({ type: "RUN_SQL_FILE", path: file.path, tabId: tab.id!, runId, offset, limit, iteration } satisfies ExtensionMessage) as Promise<SqlChunkResponse>,
-            (columns, rows) => output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows }),
+            async (columns, rows) => {
+              await output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows });
+              if (output.needsIntermediateFlush) {
+                await output.flushIntermediate((message) => { status.textContent = message; });
+              }
+            },
             () => stopRequested,
             (message) => { status.textContent = message; },
             controller.signal,
           );
+          status.textContent = `Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
           await output.flush(true);
           status.textContent = `Selesai: ${output.totalRows.toLocaleString("id-ID")} baris · ${output.parts} file Excel diunduh.`;
         } catch (error) {

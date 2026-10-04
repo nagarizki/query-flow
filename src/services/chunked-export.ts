@@ -2,6 +2,8 @@ import { serializeWorkbook, downloadWorkbook, type QueryResult } from "./excel";
 import type { SqlChunkResponse } from "../types";
 
 export const MAX_EXPORT_BYTES = 20 * 1024 * 1024;
+/** Flush buffered rows to disk before they can OOM the side panel (~900k x 25 crash). */
+export const MAX_BUFFERED_ROWS = 50_000;
 
 /** Retrieval pages are accumulated into one workbook, independent of table boundaries. */
 export class ChunkedExport {
@@ -16,6 +18,15 @@ export class ChunkedExport {
     private readonly serialize = serializeWorkbook,
   ) {}
 
+  /** Rows held in memory and not yet downloaded. */
+  get bufferedRows(): number {
+    return this.results.reduce((sum, sheet) => sum + sheet.rows.length, 0);
+  }
+
+  get needsIntermediateFlush(): boolean {
+    return this.bufferedRows >= MAX_BUFFERED_ROWS;
+  }
+
   async append(result: QueryResult): Promise<void> {
     const existing = this.results.find((entry) => entry.filename === result.filename);
     if (existing) {
@@ -27,11 +38,29 @@ export class ChunkedExport {
   }
 
   async flush(_final: boolean, partial = false): Promise<void> {
+    await this.drain(partial, false);
+  }
+
+  /**
+   * Download everything currently buffered as `_part-NNN` files and free memory.
+   * Call this during collection (e.g. every chunk) so a ~900k-row run never
+   * holds the whole result set + a full XLSX serialization in memory at once.
+   * Returns true when at least one file was downloaded.
+   */
+  async flushIntermediate(onStatus?: (message: string) => void): Promise<boolean> {
+    if (!this.results.length) return false;
+    onStatus?.(`Menulis Excel sementara (bagian ke-${this.parts + 1}, ${this.bufferedRows.toLocaleString("id-ID")} baris di memori) agar panel tidak crash…`);
+    await this.drain(false, true);
+    onStatus?.(`Bagian ke-${this.parts} tersimpan. Lanjut mengambil data…`);
+    return true;
+  }
+
+  private async drain(partial: boolean, forceSplit: boolean): Promise<void> {
     while (this.results.length) {
       let selected = this.results;
       let buffer = await this.serialize(selected);
       let remainder: QueryResult[] = [];
-      const split = buffer.byteLength > this.maxBytes || this.parts > 0;
+      const split = forceSplit || buffer.byteLength > this.maxBytes || this.parts > 0;
       // Measure real XLSX bytes, including ZIP compression and workbook overhead.
       // Halve oversized prefixes until each downloadable workbook fits.
       while (buffer.byteLength > this.maxBytes) {

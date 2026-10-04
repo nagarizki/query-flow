@@ -5,13 +5,13 @@ import { runInSqlLabChunk, stopSqlLabRun, clearSqlLabRun } from "./sql-lab";
 import { TARGET, type ExtensionMessage, type ScanResult } from "../types";
 
 const activeActionIcons = {
-  16: "icons/queryflow-active-16.png",
-  32: "icons/queryflow-active-32.png",
+  16: "/icons/queryflow-active-16.png",
+  32: "/icons/queryflow-active-32.png",
 };
 
 const idleActionIcons = {
-  16: "icons/queryflow-idle-16.png",
-  32: "icons/queryflow-idle-32.png",
+  16: "/icons/queryflow-idle-16.png",
+  32: "/icons/queryflow-idle-32.png",
 };
 
 const openedPanelWindows = new Set<number>();

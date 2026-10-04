@@ -43,7 +43,10 @@ export async function runInSqlLabChunk(baseSql: string, runId: string, path: str
   // Preserve high-precision SQL values before executeScript's structured clone
   // strips the BigNumber/Decimal prototype and leaves only fields such as c/e/s.
   function normalizeResultValue(value: unknown): unknown {
-    if (typeof value === "bigint") return value.toString();
+    if (typeof value === "bigint") {
+      const num = Number(value);
+      return Number.isSafeInteger(num) ? num : value.toString();
+    }
     if (!value || typeof value !== "object") return value;
 
     const candidate = value as { c?: unknown; e?: unknown; s?: unknown; toString?: () => string };
@@ -53,7 +56,10 @@ export async function runInSqlLabChunk(baseSql: string, runId: string, path: str
     if (!isHighPrecisionNumber || typeof candidate.toString !== "function") return value;
 
     const rendered = candidate.toString();
-    return rendered === "[object Object]" ? value : rendered;
+    if (rendered === "[object Object]") return value;
+    const num = Number(rendered);
+    const digits = rendered.replace(/^[-+]/, "").replace(/^0+/, "").replace(".", "").replace(/^0+/, "");
+    return Number.isFinite(num) && digits.length <= 15 ? num : rendered;
   }
 
   // Apply the intelligent top-level ORDER BY check before starting pagination loops

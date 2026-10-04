@@ -62,6 +62,23 @@ describe("combined Excel output", () => {
     expect(output.totalRows).toBe(8);
   });
 
+  it("flushes buffered rows incrementally so a ~900k-row run never holds everything in memory", async () => {
+    const { saved, download, serialize } = downloads();
+    const output = new ChunkedExport("folder", download, 10 ** 9, serialize);
+    const rows = Array.from({ length: 60_000 }, (_, i) => [i]);
+    await output.append(result(rows));
+    expect(output.bufferedRows).toBe(60_000);
+    expect(output.needsIntermediateFlush).toBe(true);
+    expect(await output.flushIntermediate()).toBe(true);
+    expect(output.bufferedRows).toBe(0);
+    expect(output.parts).toBe(1);
+    await output.append(result([[1]]));
+    await output.flush(true);
+    // First file already used _part-001, so the remainder keeps the numbered scheme.
+    expect(saved.map((part) => part.path)).toEqual(["folder_part-001", "folder_part-002"]);
+    expect(output.totalRows).toBe(60_001);
+  });
+
   it("keeps output exactly at the byte limit in one file", async () => {
     const { saved, download, serialize } = downloads();
     const sheet = result([[1]]);

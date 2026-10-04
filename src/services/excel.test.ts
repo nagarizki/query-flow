@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { bigNumberPartsToDecimal, buildWorkbook, sheetName, exportFolder } from "./excel";
+import { bigNumberPartsToDecimal, buildWorkbook, sheetName, exportFolder, normalizeCellValue } from "./excel";
 
 it("uses the SQL title directly as the sheet name", () => {
   expect(sheetName("Agregat_1a.sql", [], "Jumlah Usaha")).toBe("Jumlah Usaha");
@@ -37,13 +37,22 @@ it("converts serialized high-precision numbers instead of writing JSON", () => {
   expect(bigNumberPartsToDecimal({ c: [123, 45600000000000], e: 2, s: 1 })).toBe("123.456");
   expect(bigNumberPartsToDecimal({ c: [12], e: -3, s: -1 })).toBe("-0.0012");
 
+  expect(normalizeCellValue({ c: [9921520318842], e: 12, s: 1 })).toBe(9921520318842);
+  expect(normalizeCellValue('{"c":[9921520318842],"e":12,"s":1}')).toBe(9921520318842);
+  expect(normalizeCellValue({ c: [123, 45600000000000], e: 2, s: 1 })).toBe(123.456);
+  expect(normalizeCellValue({ c: [123456, 78901234567890], e: 19, s: 1 })).toBe("12345678901234567890");
+
   const workbook = buildWorkbook([{
     filename: "omzet.sql",
     title: "Total Omzet",
     columns: ["metrik_total_omzet"],
-    rows: [[{ c: [1592650473717], e: 13, s: 1 }]],
+    rows: [
+      [{ c: [1592650473717], e: 13, s: 1 }],
+      ['{"c":[9921520318842],"e":12,"s":1}'],
+    ],
   }]);
-  expect(workbook.worksheets[0]?.getCell("A3").value).toBe("15926504737170");
+  expect(workbook.worksheets[0]?.getCell("A3").value).toBe(15926504737170);
+  expect(workbook.worksheets[0]?.getCell("A4").value).toBe(9921520318842);
 });
 
 

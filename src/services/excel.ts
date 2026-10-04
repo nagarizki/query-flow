@@ -61,6 +61,65 @@ export interface QueryResult {
   rows: unknown[][];
 }
 
+function bigNumberToString(c: number[], e: number, s: number): string {
+  if (!c.length) return "0";
+  let coeff = String(c[0]);
+  for (let i = 1; i < c.length; i++) coeff += String(c[i]).padStart(14, "0");
+  coeff = coeff.replace(/0+$/, "");
+  if (!coeff) return "0";
+  let result: string;
+  if (e < 0) {
+    result = `0.${"0".repeat(-e - 1)}${coeff}`;
+  } else if (e + 1 >= coeff.length) {
+    result = `${coeff}${"0".repeat(e + 1 - coeff.length)}`;
+  } else {
+    result = `${coeff.slice(0, e + 1)}.${coeff.slice(e + 1)}`;
+  }
+  return s < 0 && result !== "0" ? `-${result}` : result;
+}
+
+function parseNumeric(str: string): number | string {
+  const num = Number(str);
+  if (!Number.isFinite(num)) return str;
+  const digits = str.replace(/^[-+]/, "").replace(/^0+/, "").replace(".", "").replace(/^0+/, "");
+  // ponytail: JS double holds max 15 significant digits; string avoids precision loss in Excel.
+  return digits.length <= 15 ? num : str;
+}
+
+export function normalizeCellValue(value: unknown): unknown {
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value.startsWith('{"') && value.includes('"c"') && value.includes('"e"') && value.includes('"s"')) {
+      try {
+        const obj = JSON.parse(value);
+        if (Array.isArray(obj.c) && typeof obj.e === "number" && typeof obj.s === "number") {
+          return parseNumeric(bigNumberToString(obj.c, obj.e, obj.s));
+        }
+      } catch { /* ignore non-JSON */ }
+    }
+    return value;
+  }
+  if (typeof value === "bigint") {
+    const num = Number(value);
+    return Number.isSafeInteger(num) ? num : value.toString();
+  }
+  if (typeof value === "object") {
+    const obj = value as { s?: number; e?: number; c?: number[]; toString?: () => string };
+    if (Array.isArray(obj.c) && typeof obj.e === "number" && typeof obj.s === "number") {
+      const str = typeof obj.toString === "function" && obj.toString !== Object.prototype.toString
+        ? obj.toString()
+        : bigNumberToString(obj.c, obj.e, obj.s);
+      return parseNumeric(str);
+    }
+    if (typeof obj.toString === "function" && obj.toString !== Object.prototype.toString) {
+      const str = obj.toString();
+      if (str !== "[object Object]") return str;
+    }
+    return JSON.stringify(value);
+  }
+  return value;
+}
+
 export function buildWorkbook(results: QueryResult[]): ExcelJS.Workbook {
   const workbook = new ExcelJS.Workbook();
   const used: string[] = [];

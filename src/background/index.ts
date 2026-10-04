@@ -28,11 +28,32 @@ chrome.sidePanel.onClosed?.addListener(({ windowId }) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  void ensureHeartbeat();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  void ensureHeartbeat();
 });
+
+const HEARTBEAT_ALARM = "queryflow-heartbeat";
+
+// Periodic wake-up so Chrome does not suspend the service worker in the
+// middle of a multi-minute chunk poll, which used to surface as
+// "message channel closed before a response was received".
+async function ensureHeartbeat(): Promise<void> {
+  try {
+    await chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 1 });
+  } catch {
+    // alarms unavailable (e.g. in tests) — long polls still work, retries cover gaps.
+  }
+}
+
+chrome.alarms?.onAlarm.addListener((alarm) => {
+  if (alarm.name !== HEARTBEAT_ALARM) return;
+});
+
+void ensureHeartbeat();
 
 chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
   if (message.type === "STOP_SQL_RUN" || message.type === "CLEAR_SQL_RUN") {

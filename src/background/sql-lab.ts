@@ -28,6 +28,12 @@ export async function runInSqlLabChunk(baseSql: string, runId: string, path: str
     return false;
   }
 
+  // FASIH/Superset may normalize the stored SQL (whitespace, trailing
+  // semicolons), so compare a normalized form instead of the raw string.
+  function normalizeSql(value: string): string {
+    return value.trim().replace(/;+\s*$/, "").replace(/\s+/g, " ");
+  }
+
   // Keep an explicit outer ORDER BY. Otherwise use the first output column by
   // position: guessing an identifier from a CTE/SELECT expression can reference
   // a column that is not exposed by the outer query.
@@ -120,7 +126,9 @@ export async function runInSqlLabChunk(baseSql: string, runId: string, path: str
       editor.setValue(paginatedSql, -1);
       editor.clearSelection();
       
-      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      // setTimeout (not requestAnimationFrame): rAF never fires while the
+      // SQL Lab tab is hidden, which stalled unattended runs in other tabs.
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
 
       const run = [...document.querySelectorAll<HTMLButtonElement>("button")]
         .filter(visible).filter((button) => /^run(?: query)?$/i.test(button.textContent?.trim() ?? ""));
@@ -130,6 +138,7 @@ export async function runInSqlLabChunk(baseSql: string, runId: string, path: str
       run[0].click();
 
       const deadline = Date.now() + 240_000;
+      const matchStart = Date.now();
       let queryId: string | undefined;
       let batchColumns: string[] = [];
       const batchRows: unknown[][] = [];
@@ -140,8 +149,21 @@ export async function runInSqlLabChunk(baseSql: string, runId: string, path: str
         await new Promise((resolve) => setTimeout(resolve, 300));
         const queries = store.getState().sqlLab?.queries ?? {};
         if (!queryId) {
-          const candidates = Object.entries(queries).filter(([id, query]) => !before[id] && query.sql?.trim() === paginatedSql.trim());
-          queryId = candidates[0]?.[0];
+          const wanted = normalizeSql(paginatedSql);
+          const fresh = Object.entries(queries).filter(([id]) => !before[id]);
+          queryId = fresh.find(([, query]) => normalizeSql(query.sql ?? "") === wanted)?.[0]
+            ?? fresh.find(([, query]) => (query.sql ?? "").includes(`OFFSET ${offset}`))?.[0]
+            ?? (fresh.length === 1 ? fresh[0]?.[0] : undefined);
+          if (!queryId && Date.now() - matchStart > 15_000) {
+            // Page is idle but no matching query appeared shortly after RUN:
+            // the success visible in SQL Lab belongs to a query we cannot
+            // correlate, so fail fast instead of hanging until the 4-min mark.
+            const idle = ![...document.querySelectorAll<HTMLButtonElement>("button")]
+              .some((button) => visible(button) && /^stop(?: query)?$/i.test(button.textContent?.trim() ?? ""));
+            if (idle) {
+              return { ok: false, message: "Query di SQL Lab sudah selesai tapi tidak cocok dengan permintaan ( pencocokan SQL gagal ). Coba Run ulang; jika berulang, periksa riwayat query tab tersebut." };
+            }
+          }
         }
 
         const query = queryId ? queries[queryId] : undefined;

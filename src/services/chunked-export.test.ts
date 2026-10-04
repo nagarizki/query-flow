@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ChunkedExport, collectQuery } from "./chunked-export";
+import { ChunkedExport, collectQuery, MAX_BUFFERED_ROWS } from "./chunked-export";
 import { serializeWorkbook, type QueryResult } from "./excel";
 import type { SqlChunkResponse } from "../types";
 
@@ -65,9 +65,9 @@ describe("combined Excel output", () => {
   it("flushes buffered rows incrementally so a ~900k-row run never holds everything in memory", async () => {
     const { saved, download, serialize } = downloads();
     const output = new ChunkedExport("folder", download, 10 ** 9, serialize);
-    const rows = Array.from({ length: 60_000 }, (_, i) => [i]);
+    const rows = Array.from({ length: MAX_BUFFERED_ROWS + 10_000 }, (_, i) => [i]);
     await output.append(result(rows));
-    expect(output.bufferedRows).toBe(60_000);
+    expect(output.bufferedRows).toBe(MAX_BUFFERED_ROWS + 10_000);
     expect(output.needsIntermediateFlush).toBe(true);
     expect(await output.flushIntermediate()).toBe(true);
     expect(output.bufferedRows).toBe(0);
@@ -76,7 +76,7 @@ describe("combined Excel output", () => {
     await output.flush(true);
     // First file already used _part-001, so the remainder keeps the numbered scheme.
     expect(saved.map((part) => part.path)).toEqual(["folder_part-001", "folder_part-002"]);
-    expect(output.totalRows).toBe(60_001);
+    expect(output.totalRows).toBe(MAX_BUFFERED_ROWS + 10_001);
   });
 
   it("keeps output exactly at the byte limit in one file", async () => {
@@ -167,6 +167,34 @@ describe("automatic chunk collection", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
+  it("retries a dropped message channel at the same offset instead of aborting", async () => {
+    const request = vi.fn<(...args: number[]) => Promise<SqlChunkResponse>>()
+      .mockRejectedValueOnce(new Error("A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received."))
+      .mockResolvedValueOnce(chunk([[1]], true))
+      .mockResolvedValueOnce(chunk([[2]]));
+    const accept = vi.fn(async () => {});
+    const report = vi.fn();
+    await collectQuery(request, accept, () => false, report, undefined, { retryDelayMs: 0 });
+    expect(request.mock.calls).toEqual([[0, 9000, 1], [0, 9000, 1], [1, 1, 2]]);
+    expect(accept).toHaveBeenCalledTimes(2);
+    expect(report.mock.calls.some(([message]) => /mencoba ulang 1\/3/i.test(String(message)))).toBe(true);
+  });
+
+  it("retries a still-running query instead of exporting a partial batch", async () => {
+    const request = vi.fn<(...args: number[]) => Promise<SqlChunkResponse>>()
+      .mockResolvedValueOnce({ ok: false, message: "Query masih berjalan. Tunggu selesai." })
+      .mockResolvedValueOnce(chunk([[1]]));
+    const accept = vi.fn(async () => {});
+    await collectQuery(request, accept, () => false, vi.fn(), undefined, { retryDelayMs: 0 });
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(accept).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives up after repeated transient failures", async () => {
+    const request = vi.fn(async (): Promise<SqlChunkResponse> => ({ ok: false, message: "Could not establish connection. Receiving end does not exist." }));
+    await expect(collectQuery(request, vi.fn(), () => false, vi.fn(), undefined, { retryDelayMs: 0 })).rejects.toThrow("Receiving end");
+    expect(request).toHaveBeenCalledTimes(4);
+  });
   it("terminates retries even if a single row cannot be fetched", async () => {
     const request = vi.fn(async () => ({ ok: false as const, message: "Payload too large" }));
     await expect(collectQuery(request, vi.fn(), () => false, vi.fn())).rejects.toThrow("Payload too large");

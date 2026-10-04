@@ -3,7 +3,7 @@ import type { SqlChunkResponse } from "../types";
 
 export const MAX_EXPORT_BYTES = 20 * 1024 * 1024;
 /** Flush buffered rows to disk before they can OOM the side panel (~900k x 25 crash). */
-export const MAX_BUFFERED_ROWS = 50_000;
+export const MAX_BUFFERED_ROWS = 200_000;
 
 /** Retrieval pages are accumulated into one workbook, independent of table boundaries. */
 export class ChunkedExport {
@@ -95,6 +95,27 @@ export class ChunkedExport {
   }
 }
 
+/** Errors worth retrying at the same offset instead of aborting the batch. */
+export const TRANSIENT_RUN_ERROR = /message channel closed|receiving end does not exist|could not establish connection|message port closed|disconnected|service worker|worker.*terminat|koneksi sql lab terputus|query masih berjalan/i;
+
+export interface CollectQueryOptions {
+  /** Max retries per offset for transient errors. Defaults to 3. */
+  transientRetries?: number;
+  /** Base delay between transient retries (multiplied by attempt). Defaults to 2000 ms. */
+  retryDelayMs?: number;
+}
+
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
+    const onAbort = (): void => { cleanup(); reject(new Error("Run dihentikan oleh pengguna.")); };
+    const cleanup = (): void => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); };
+    if (signal?.aborted) { onAbort(); return; }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /** Retry size failures at the same offset; advance only after a chunk is accepted. */
 export async function collectQuery(
   request: (offset: number, limit: number, iteration: number) => Promise<SqlChunkResponse>,
@@ -102,10 +123,14 @@ export async function collectQuery(
   stopped: () => boolean,
   report: (message: string) => void,
   signal?: AbortSignal,
+  options: CollectQueryOptions = {},
 ): Promise<void> {
+  const maxTransient = options.transientRetries ?? 3;
+  const baseDelay = options.retryDelayMs ?? 2000;
   let offset = 0;
   let limit = 9000;
   let iteration = 1;
+  let transientAttempts = 0;
   while (!stopped()) {
     let response: SqlChunkResponse;
     try {
@@ -130,6 +155,12 @@ export async function collectQuery(
     }
     if (!response.ok) {
       if (stopped()) break;
+      if (TRANSIENT_RUN_ERROR.test(response.message) && transientAttempts < maxTransient) {
+        transientAttempts++;
+        report(`Koneksi ke SQL Lab terputus sesaat. Mencoba ulang ${transientAttempts}/${maxTransient} dari baris ${offset + 1}…`);
+        await sleepAbortable(baseDelay * transientAttempts, signal);
+        continue;
+      }
       if (limit > 1 && /exceed|too (?:large|big)|size.{0,30}limit|limit.{0,30}(?:size|bytes|mb)|payload|out of memory/i.test(response.message)) {
         limit = Math.max(1, Math.floor(limit / 2));
         report(`Batas ukuran tercapai. Mengulang dari baris ${offset + 1} dengan chunk ${limit} baris…`);
@@ -140,6 +171,7 @@ export async function collectQuery(
     // A chunk that finished concurrently with Stop is still valid and exported.
     if (response.rows.length || offset === 0) await accept(response.columns, response.rows);
     offset += response.rows.length;
+    transientAttempts = 0;
     if (stopped()) break;
     if (!response.hasMore) return;
     if (!response.rows.length) throw new Error("Chunk kosong tetapi hasil belum selesai; proses dihentikan agar tidak mengulang tanpa akhir.");

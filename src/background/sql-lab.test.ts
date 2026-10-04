@@ -21,7 +21,7 @@ function setup(data: Record<string, unknown>[], state = "success") {
 it("returns a bounded prefix and signals more data even below the requested row count", async () => {
   setup(Array.from({ length: 4 }, () => ({ id: "é".repeat(400_000) })));
   const promise = runInSqlLabChunk("select id from t", "run", "a.sql", 0, 9000, 1);
-  await vi.advanceTimersByTimeAsync(300);
+  await vi.advanceTimersByTimeAsync(1000);
   const response = await promise;
   expect(response.ok).toBe(true);
   if (!response.ok) return;
@@ -37,6 +37,37 @@ it("does not report a timed-out identified query as a successful empty result", 
   expect(await promise).toMatchObject({ ok: false, message: expect.stringContaining("4 menit") });
 });
 
+it("matches a stored query whose whitespace/semicolons were normalized by SQL Lab", async () => {
+  vi.useFakeTimers();
+  const queries: Record<string, unknown> = {};
+  let sql = "";
+  const editor = { getClientRects: () => [1], env: { editor: { setValue: (value: string) => { sql = value; }, clearSelection: () => {} } } };
+  const node = { __reactFiber$test: { memoizedProps: { store: { getState: () => ({ sqlLab: { queries } }) } } } };
+  const run = { textContent: "Run", disabled: false, getClientRects: () => [1], click: vi.fn(() => {
+    // Superset stores a reformatted variant: collapsed whitespace differs, extra semicolon.
+    queries["q1"] = { sql: `${sql.replace(/\s+/g, "   ")};`, state: "success", results: { columns: [{ name: "id" }], data: [{ id: 1 }] } };
+  }) };
+  vi.stubGlobal("document", { querySelectorAll: (selector: string) => selector === ".ace_editor" ? [editor] : selector === "button" ? [run] : [node] });
+  vi.stubGlobal("window", { location: { origin: "https://example.test" }, postMessage: vi.fn() });
+  vi.stubGlobal("requestAnimationFrame", (callback: () => void) => callback());
+  const promise = runInSqlLabChunk("select id from t", "run", "a.sql", 0, 9000, 1);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(await promise).toMatchObject({ ok: true, rows: [[1]], hasMore: false });
+});
+
+it("fails fast when SQL Lab is idle but no matching query appears", async () => {
+  vi.useFakeTimers();
+  const queries: Record<string, unknown> = {};
+  const editor = { getClientRects: () => [1], env: { editor: { setValue: () => {}, clearSelection: () => {} } } };
+  const node = { __reactFiber$test: { memoizedProps: { store: { getState: () => ({ sqlLab: { queries } }) } } } };
+  const run = { textContent: "Run", disabled: false, getClientRects: () => [1], click: vi.fn() };
+  vi.stubGlobal("document", { querySelectorAll: (selector: string) => selector === ".ace_editor" ? [editor] : selector === "button" ? [run] : [node] });
+  vi.stubGlobal("window", { location: { origin: "https://example.test" }, postMessage: vi.fn() });
+  vi.stubGlobal("requestAnimationFrame", (callback: () => void) => callback());
+  const promise = runInSqlLabChunk("select id from t", "run", "a.sql", 0, 9000, 1);
+  await vi.advanceTimersByTimeAsync(16_000);
+  expect(await promise).toMatchObject({ ok: false, message: expect.stringContaining("tidak cocok") });
+});
 it("honors cancellation before a new chunk starts", async () => {
   const { run } = setup([{ id: 1 }]);
   stopSqlLabRun("run");
@@ -47,7 +78,7 @@ it("honors cancellation before a new chunk starts", async () => {
 it("keeps a result completed concurrently with cancellation", async () => {
   setup([{ id: 1 }]);
   const promise = runInSqlLabChunk("select id from t", "run", "a.sql", 0, 9000, 1);
-  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(300);
   stopSqlLabRun("run");
   await vi.advanceTimersByTimeAsync(300);
   expect(await promise).toMatchObject({ ok: true, rows: [[1]], hasMore: false });

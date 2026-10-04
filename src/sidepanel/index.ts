@@ -77,7 +77,7 @@ app.innerHTML = `
           <p>Sekali Run, data diambil bertahap sampai selesai. Hasil besar otomatis diunduh menjadi beberapa file Excel bernomor.</p>
           <ul>
             <li>Tombol <strong>Run</strong> berubah menjadi <strong>Stop</strong> selama query berjalan.</li>
-            <li>Editor SQL aktif akan diganti. Tetap buka tab SQL Lab dan side panel ini.</li>
+            <li>Editor SQL aktif akan diganti. Side panel harus tetap terbuka; tab SQL Lab boleh tidak terlihat, tapi jangan ditutup atau dipakai menjalankan query lain.</li>
             <li><strong>Stop</strong> atau error tetap mengunduh hasil yang sudah terkumpul sebagai Excel parsial.</li>
           </ul>
         </div>

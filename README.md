@@ -152,7 +152,7 @@ Klik **Run** di samping satu file. Isi editor aktif diganti dengan salinan SQL y
 
 Semua SQL dalam folder dijalankan berurutan. Query berikutnya dimulai setelah query sebelumnya sukses dan hasilnya terbaca. Tombol Run Folder juga berubah menjadi **Stop** selama batch aktif. Tetap buka Side Panel; jangan mengganti tab query atau menjalankan query lain selama batch.
 
-Ukuran awal chunk adalah 9.000 baris dan otomatis mengecil jika batas ukuran tercapai. QueryFlow menjalankan chunk berikutnya dengan `OFFSET` sesuai jumlah baris yang sudah diterima hingga tidak ada hasil lanjutan. Panel menampilkan **Proses ke-n** dan total baris yang telah terkumpul.
+Ukuran awal chunk adalah 9.000 baris dan otomatis mengecil jika batas ukuran tercapai. QueryFlow menjalankan chunk berikutnya dengan `OFFSET` sesuai jumlah baris yang sudah diterima hingga tidak ada hasil lanjutan. Panel menampilkan **Proses ke-n** dan total baris yang telah terkumpul. Gangguan sesaat (perubahan tab, service worker disuspend) dicoba ulang otomatis 3x per chunk sebelum batch dinyatakan gagal.
 
 **SQL dalam folder dijalankan berdasarkan natural filename order.** Contoh: `Tabel1.sql`, `Tabel2.sql`, …, `Tabel10.sql`; suffix `1a`, `1b`, `1c`, `1d` tetap berurutan. Snapshot lama juga diurutkan saat dibuka kembali.
 

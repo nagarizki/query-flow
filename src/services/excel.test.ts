@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { bigNumberPartsToDecimal, buildWorkbook, sheetName, exportFolder, normalizeCellValue } from "./excel";
+import ExcelJS from "exceljs";
+import { bigNumberPartsToDecimal, buildWorkbook, sheetName, exportFolder, normalizeCellValue, serializeWorkbook } from "./excel";
 
 it("uses the SQL title directly as the sheet name", () => {
   expect(sheetName("Agregat_1a.sql", [], "Jumlah Usaha")).toBe("Jumlah Usaha");
@@ -67,4 +68,49 @@ it("uses Chrome downloads for automatic parts and reports download rejection", a
   await exportFolder("folder_part-001", results);
   expect(download).toHaveBeenCalledWith({ url: "blob:test", filename: "folder_part-001.xlsx", saveAs: false, conflictAction: "uniquify" });
   await expect(exportFolder("folder_partial", results)).rejects.toThrow("Download rejected");
+});
+
+it("streams valid OpenXML XLSX with correct types, formatting, and frozen panes", async () => {
+  const results = [
+    {
+      filename: "test1.sql",
+      title: "Laporan & Statistik",
+      columns: ["id", "nama", "omzet", "aktif"],
+      rows: [
+        [1, "Toko \"A & B\" <Utama>", 1500000.5, true],
+        [2, "Toko C", "12345678901234567890", false],
+        [3, null, null, null],
+      ],
+    },
+    {
+      filename: "test2.sql",
+      title: "Ringkasan",
+      columns: ["kode"],
+      rows: [["3507"]],
+    },
+  ];
+
+  const buffer = await serializeWorkbook(results);
+  expect(buffer.byteLength).toBeGreaterThan(0);
+
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer as unknown as Parameters<typeof wb.xlsx.load>[0]);
+  expect(wb.worksheets).toHaveLength(2);
+
+  const ws1 = wb.worksheets[0]!;
+  expect(ws1.name).toBe("Laporan & Statistik");
+  expect(ws1.getCell("A1").value).toBe("Laporan & Statistik");
+  expect(ws1.getCell("A2").value).toBe("id");
+  expect(ws1.getCell("B2").value).toBe("nama");
+  expect(ws1.getCell("A3").value).toBe(1);
+  expect(ws1.getCell("B3").value).toBe("Toko \"A & B\" <Utama>");
+  expect(ws1.getCell("C3").value).toBe(1500000.5);
+  expect(ws1.getCell("D3").value).toBe(true);
+  expect(ws1.getCell("C4").value).toBe("12345678901234567890");
+  expect(ws1.getCell("B5").value).toBeNull();
+  expect((ws1.views[0] as { ySplit?: number } | undefined)?.ySplit).toBe(2);
+
+  const ws2 = wb.worksheets[1]!;
+  expect(ws2.name).toBe("Ringkasan");
+  expect(ws2.getCell("A3").value).toBe("3507");
 });

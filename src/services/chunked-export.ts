@@ -1,9 +1,9 @@
 import { serializeWorkbook, downloadWorkbook, type QueryResult } from "./excel";
 import type { SqlChunkResponse } from "../types";
 
-export const MAX_EXPORT_BYTES = 20 * 1024 * 1024;
-/** Flush buffered rows to disk before they can OOM the side panel (~900k x 25 crash). */
-export const MAX_BUFFERED_ROWS = 200_000;
+export const MAX_EXPORT_BYTES = 300 * 1024 * 1024;
+/** Flush buffered rows to disk when reaching Excel worksheet limit (1M rows) or user split threshold. */
+export const MAX_BUFFERED_ROWS = 1_000_000;
 
 /** Retrieval pages are accumulated into one workbook, independent of table boundaries. */
 export class ChunkedExport {
@@ -65,7 +65,7 @@ export class ChunkedExport {
       // Halve oversized prefixes until each downloadable workbook fits.
       while (buffer.byteLength > this.maxBytes) {
         const units = selected.reduce((sum, sheet) => sum + Math.max(1, sheet.rows.length), 0);
-        if (units <= 1) throw new Error("Satu baris/header Excel melebihi batas 20 MB dan tidak dapat dipecah lagi.");
+        if (units <= 1) throw new Error(`Satu baris/header Excel melebihi batas ${Math.round(this.maxBytes / (1024 * 1024))} MB dan tidak dapat dipecah lagi.`);
         let remaining = Math.floor(units / 2);
         const prefix: QueryResult[] = [];
         const suffix: QueryResult[] = [];

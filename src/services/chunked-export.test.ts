@@ -62,7 +62,7 @@ describe("combined Excel output", () => {
     expect(output.totalRows).toBe(8);
   });
 
-  it("flushes buffered rows incrementally so a ~900k-row run never holds everything in memory", async () => {
+  it("flushes buffered rows incrementally when reaching the 1M row limit", async () => {
     const { saved, download, serialize } = downloads();
     const output = new ChunkedExport("folder", download, 10 ** 9, serialize);
     const rows = Array.from({ length: MAX_BUFFERED_ROWS + 10_000 }, (_, i) => [i]);

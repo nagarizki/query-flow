@@ -1,17 +1,16 @@
 import "./style.css";
 import { ChunkedExport, collectQuery } from "../services/chunked-export";
 import { applyWilayahConfig, extractSqlTitle } from "../services/sql";
-
-let folderRunning = false;
 import { loadSnapshot, loadWilayah, saveSnapshot, saveWilayah } from "../services/storage";
 import { groupSqlFiles, isSqlPath } from "../services/repository-sync/files";
-import { addWilayahCode, validateWilayah } from "../services/wilayah";
+import { addWilayahCode, targetProvinceCodes, validateWilayah } from "../services/wilayah";
 import { TARGET, type ExtensionMessage, type RepositorySnapshot, type ScanResult, type SqlFile, type SqlRunProgress, type SqlChunkResponse, type SyncProgress, type WilayahConfig } from "../types";
 
 let snapshot: RepositorySnapshot | null = null;
 let wilayah: WilayahConfig = { level1: [], level2: [] };
 let progress: SyncProgress = { phase: "idle", message: "Not synced" };
 let wilayahError = "";
+let folderRunning = false;
 const runProgressTargets = new Map<string, (progress: SqlRunProgress) => void>();
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -55,6 +54,10 @@ app.innerHTML = `
           <button id="confirm-level1" type="button">Tambah</button>
         </div>
         <button id="show-level1-add" class="text-button" type="button">＋ Tambah Provinsi</button>
+        <label class="checkbox-row">
+          <input id="split-level1" type="checkbox" checked />
+          <span>Pisahkan file Excel per provinsi</span>
+        </label>
       </div>
       <div class="field">
         <label>Level 2 <span>/ Kabupaten/Kota · kosong berarti semua</span></label>
@@ -143,12 +146,15 @@ function renderWilayah(): void {
   renderCodeList("level1-list", "Level 1", wilayah.level1, (index, code) => updateCode("level1", index, code), (index) => removeCode("level1", index));
   renderCodeList("level2-list", "Level 2", wilayah.level2, (index, code) => updateCode("level2", index, code), (index) => removeCode("level2", index));
   byId("wilayah-error").textContent = wilayahError;
+  byId<HTMLInputElement>("split-level1").checked = wilayah.splitLevel1 !== false;
   byId("wilayah-mode").textContent = wilayah.level2.length > 0 && wilayah.level1.length > 0
     ? "Filter aktif: Kabupaten/Kota. Daftar provinsi diabaikan selama Level 2 terisi."
     : wilayah.level2.length > 0
       ? "Filter aktif: Kabupaten/Kota."
       : wilayah.level1.length > 0
-        ? "Filter aktif: seluruh Kabupaten/Kota dalam provinsi terpilih."
+        ? (wilayah.splitLevel1 !== false
+            ? "Filter aktif: loop sekuensial per provinsi (1 file Excel per provinsi)."
+            : "Filter aktif: seluruh provinsi terpilih digabung dalam 1 file Excel.")
         : "Filter wilayah kosong: semua wilayah akan dijalankan.";
 }
 
@@ -226,45 +232,69 @@ function renderGroups(): void {
       batchController = new AbortController();
       batch.textContent = "■ Stop";
       batch.classList.add("stop-button");
-      const output = new ChunkedExport(group.path);
+      const targetProvinces = targetProvinceCodes(wilayah);
+      let currentOutput: ChunkedExport | null = null;
+      let currentPrefix = "";
       try {
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
         batchTabId = tab.id;
-        for (const [index, file] of group.files.entries()) {
+        for (const [provIndex, prov] of targetProvinces.entries()) {
           if (batchStopRequested) throw new Error("Run Folder dihentikan oleh pengguna.");
-          batchStatus.textContent = `${index + 1}/${group.files.length}: ${file.name} — menunggu hasil. Tetap buka panel dan tab query ini.`;
-          const runId = createRunId();
-          batchRunId = runId;
-          runProgressTargets.set(runId, (runProgress) => {
-            batchStatus.textContent = `${index + 1}/${group.files.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
-          });
-          let pending: Promise<SqlChunkResponse> | undefined;
-          try {
-            await collectQuery(
-              (offset, limit, iteration) => pending = chrome.runtime.sendMessage({ type: "RUN_SQL_FILE", path: file.path, tabId: tab.id!, runId, offset, limit, iteration } satisfies ExtensionMessage) as Promise<SqlChunkResponse>,
-              async (columns, rows) => {
-                await output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows });
-                if (output.needsIntermediateFlush) {
-                  await output.flushIntermediate((message) => { batchStatus.textContent = message; });
-                }
-              },
-              () => batchStopRequested,
-              (message) => { batchStatus.textContent = message; },
-              batchController.signal,
-            );
-          } finally {
-            runProgressTargets.delete(runId);
-            // Keep cancellation active until the outstanding request settles.
-            void (pending ?? Promise.resolve()).then(() => clearRun(runId, tab.id!), () => clearRun(runId, tab.id!));
-            // Keep the Stop action available between files and while exporting.
+          const activeConfig: WilayahConfig = prov ? { level1: [prov], level2: [] } : wilayah;
+          const exportPath = prov ? `${group.path}_${prov}` : group.path;
+          const output = new ChunkedExport(exportPath);
+          currentOutput = output;
+          const provPrefix = prov ? `Provinsi ${prov} [${provIndex + 1}/${targetProvinces.length}] - ` : "";
+          currentPrefix = provPrefix;
+          for (const [index, file] of group.files.entries()) {
+            if (batchStopRequested) throw new Error("Run Folder dihentikan oleh pengguna.");
+            batchStatus.textContent = `${provPrefix}File ${index + 1}/${group.files.length}: ${file.name} — menunggu hasil. Tetap buka panel dan tab query ini.`;
+            const runId = createRunId();
+            batchRunId = runId;
+            runProgressTargets.set(runId, (runProgress) => {
+              batchStatus.textContent = `${provPrefix}File ${index + 1}/${group.files.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
+            });
+            let pending: Promise<SqlChunkResponse> | undefined;
+            try {
+              await collectQuery(
+                (offset, limit, iteration) => pending = chrome.runtime.sendMessage({
+                  type: "RUN_SQL_FILE",
+                  path: file.path,
+                  tabId: tab.id!,
+                  runId,
+                  offset,
+                  limit,
+                  iteration,
+                  wilayah: activeConfig,
+                } satisfies ExtensionMessage) as Promise<SqlChunkResponse>,
+                async (columns, rows) => {
+                  await output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows });
+                  if (output.needsIntermediateFlush) {
+                    await output.flushIntermediate((message) => { batchStatus.textContent = `${provPrefix}${message}`; });
+                  }
+                },
+                () => batchStopRequested,
+                (message) => { batchStatus.textContent = `${provPrefix}${message}`; },
+                batchController.signal,
+              );
+            } finally {
+              runProgressTargets.delete(runId);
+              // Keep cancellation active until the outstanding request settles.
+              void (pending ?? Promise.resolve()).then(() => clearRun(runId, tab.id!), () => clearRun(runId, tab.id!));
+              // Keep the Stop action available between files and while exporting.
+            }
           }
+          batchStatus.textContent = `${provPrefix}Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
+          await output.flush(true);
         }
-        batchStatus.textContent = `Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
-        await output.flush(true);
-        batchStatus.textContent = `Selesai: ${output.totalRows.toLocaleString("id-ID")} baris · ${output.parts} file Excel diunduh.`;
+        batchStatus.textContent = targetProvinces.length > 1
+          ? `Selesai: ${targetProvinces.length} provinsi berhasil diproses.`
+          : `Selesai: ${currentOutput?.totalRows.toLocaleString("id-ID") ?? 0} baris · ${currentOutput?.parts ?? 0} file Excel diunduh.`;
       } catch (error) {
-        batchStatus.textContent = await finishPartial(output, error);
+        batchStatus.textContent = currentOutput
+          ? `${currentPrefix}${await finishPartial(currentOutput, error)}`
+          : (error instanceof Error ? error.message : "Run Folder gagal.");
       } finally {
         folderRunning = false;
         batchRunId = null;
@@ -321,45 +351,72 @@ function renderGroups(): void {
         folderRunning = true;
         stopRequested = false;
         controller = new AbortController();
-        const output = new ChunkedExport(file.path.replace(/\.sql$/i, ""));
-        status.textContent = "Mengirim SQL ke editor aktif...";
-        const runId = createRunId();
+        const targetProvinces = targetProvinceCodes(wilayah);
+        const basePath = file.path.replace(/\.sql$/i, "");
+        let currentOutput: ChunkedExport | null = null;
+        let currentPrefix = "";
         let tabId: number | undefined;
-        let pending: Promise<SqlChunkResponse> | undefined;
-        runProgressTargets.set(runId, (runProgress) => {
-          status.textContent = formatRunProgress(runProgress);
-        });
         try {
           const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
           if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
           tabId = tab.id;
-          activeRun = { runId, tabId };
           run.textContent = "■ Stop";
           run.classList.add("stop-button");
-          await collectQuery(
-            (offset, limit, iteration) => pending = chrome.runtime.sendMessage({ type: "RUN_SQL_FILE", path: file.path, tabId: tab.id!, runId, offset, limit, iteration } satisfies ExtensionMessage) as Promise<SqlChunkResponse>,
-            async (columns, rows) => {
-              await output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows });
-              if (output.needsIntermediateFlush) {
-                await output.flushIntermediate((message) => { status.textContent = message; });
-              }
-            },
-            () => stopRequested,
-            (message) => { status.textContent = message; },
-            controller.signal,
-          );
-          status.textContent = `Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
-          await output.flush(true);
-          status.textContent = `Selesai: ${output.totalRows.toLocaleString("id-ID")} baris · ${output.parts} file Excel diunduh.`;
-        } catch (error) {
-          status.textContent = await finishPartial(output, error);
-        } finally {
-          if (tabId !== undefined) {
-            void (pending ?? Promise.resolve()).then(() => clearRun(runId, tabId!), () => clearRun(runId, tabId!));
+          for (const [provIndex, prov] of targetProvinces.entries()) {
+            if (stopRequested) throw new Error("Run dihentikan oleh pengguna.");
+            const activeConfig: WilayahConfig = prov ? { level1: [prov], level2: [] } : wilayah;
+            const exportPath = prov ? `${basePath}_${prov}` : basePath;
+            const output = new ChunkedExport(exportPath);
+            currentOutput = output;
+            const provPrefix = prov ? `Provinsi ${prov} [${provIndex + 1}/${targetProvinces.length}] - ` : "";
+            currentPrefix = provPrefix;
+            status.textContent = `${provPrefix}Mengirim SQL ke editor aktif...`;
+            const runId = createRunId();
+            activeRun = { runId, tabId };
+            runProgressTargets.set(runId, (runProgress) => {
+              status.textContent = `${provPrefix}${formatRunProgress(runProgress)}`;
+            });
+            let pending: Promise<SqlChunkResponse> | undefined;
+            try {
+              await collectQuery(
+                (offset, limit, iteration) => pending = chrome.runtime.sendMessage({
+                  type: "RUN_SQL_FILE",
+                  path: file.path,
+                  tabId: tab.id!,
+                  runId,
+                  offset,
+                  limit,
+                  iteration,
+                  wilayah: activeConfig,
+                } satisfies ExtensionMessage) as Promise<SqlChunkResponse>,
+                async (columns, rows) => {
+                  await output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows });
+                  if (output.needsIntermediateFlush) {
+                    await output.flushIntermediate((message) => { status.textContent = `${provPrefix}${message}`; });
+                  }
+                },
+                () => stopRequested,
+                (message) => { status.textContent = `${provPrefix}${message}`; },
+                controller.signal,
+              );
+            } finally {
+              runProgressTargets.delete(runId);
+              void (pending ?? Promise.resolve()).then(() => clearRun(runId, tab.id!), () => clearRun(runId, tab.id!));
+            }
+            status.textContent = `${provPrefix}Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
+            await output.flush(true);
           }
+          status.textContent = targetProvinces.length > 1
+            ? `Selesai: ${targetProvinces.length} provinsi berhasil diproses.`
+            : `Selesai: ${currentOutput?.totalRows.toLocaleString("id-ID") ?? 0} baris · ${currentOutput?.parts ?? 0} file Excel diunduh.`;
+        } catch (error) {
+          status.textContent = currentOutput
+            ? `${currentPrefix}${await finishPartial(currentOutput, error)}`
+            : (error instanceof Error ? error.message : "Run gagal.");
+        } finally {
           folderRunning = false;
-          runProgressTargets.delete(runId);
           activeRun = null;
+          stopRequested = false;
           run.disabled = false;
           run.textContent = "▶ Run";
           run.classList.remove("stop-button");
@@ -391,19 +448,19 @@ async function persistWilayah(next: WilayahConfig): Promise<boolean> {
   return true;
 }
 
-async function updateCode(level: keyof WilayahConfig, index: number, code: string): Promise<void> {
+async function updateCode(level: "level1" | "level2", index: number, code: string): Promise<void> {
   const next = [...wilayah[level]];
   next[index] = code.trim();
   await persistWilayah({ ...wilayah, [level]: next });
   renderWilayah();
 }
 
-async function removeCode(level: keyof WilayahConfig, index: number): Promise<void> {
+async function removeCode(level: "level1" | "level2", index: number): Promise<void> {
   await persistWilayah({ ...wilayah, [level]: wilayah[level].filter((_, candidate) => candidate !== index) });
   renderWilayah();
 }
 
-async function confirmAdd(level: keyof WilayahConfig, input: HTMLInputElement, rowId: string): Promise<void> {
+async function confirmAdd(level: "level1" | "level2", input: HTMLInputElement, rowId: string): Promise<void> {
   const code = input.value.trim();
   const next = addWilayahCode(wilayah, level, code);
   if (next === wilayah) {
@@ -576,6 +633,11 @@ byId("show-level2-add").addEventListener("click", () => {
 byId("confirm-level2").addEventListener("click", () => void confirmAdd("level2", newLevel2Input, "add-level2-row"));
 newLevel2Input.addEventListener("keydown", (event) => {
   if (event.key === "Enter") void confirmAdd("level2", newLevel2Input, "add-level2-row");
+});
+byId<HTMLInputElement>("split-level1").addEventListener("change", async (event) => {
+  const target = event.target as HTMLInputElement;
+  await persistWilayah({ ...wilayah, splitLevel1: target.checked });
+  renderWilayah();
 });
 byId("close-preview").addEventListener("click", () => byId<HTMLDialogElement>("preview-dialog").close());
 

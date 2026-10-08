@@ -35,6 +35,7 @@ export interface RepositorySnapshot {
 export interface WilayahConfig {
   level1: string[];
   level2: string[];
+  splitLevel1?: boolean;
 }
 
 export type SyncPhase =
@@ -63,7 +64,7 @@ export interface SqlRunProgress {
 }
 
 export type ExtensionMessage =
-  | { type: "RUN_SQL_FILE"; path: string; tabId: number; runId: string; offset: number; limit: number; iteration: number }
+  | { type: "RUN_SQL_FILE"; path: string; tabId: number; runId: string; offset: number; limit: number; iteration: number; wilayah?: WilayahConfig }
   | { type: "CLEAR_SQL_RUN"; runId: string; tabId: number }
   | { type: "STOP_SQL_RUN"; runId: string; tabId: number }
   | { type: "SQL_RUN_PROGRESS"; progress: SqlRunProgress }

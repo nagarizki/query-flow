@@ -111,7 +111,7 @@ export function buildWorkbook(results: QueryResult[]): ExcelJS.Workbook {
 }
 
 export function workbookFilename(path: string): string {
-  const folder = path.replace(/^\/+|\/+$/g, "") || "Query";
+  const folder = path.replace(/\.sql$/i, "").replace(/^\/+|\/+$/g, "") || "Query";
   return `${folder.replace(/[^a-z0-9_-]/gi, "_")}.xlsx`;
 }
 

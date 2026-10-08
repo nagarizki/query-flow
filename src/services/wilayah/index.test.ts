@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addWilayahCode, normalizeWilayah, validateWilayah } from ".";
+import { addWilayahCode, normalizeWilayah, targetProvinceCodes, validateWilayah } from ".";
 
 describe("wilayah validation", () => {
   it("accepts numeric level 1 and zero or more unique level 2 codes", () => {
@@ -23,6 +23,14 @@ describe("wilayah validation", () => {
   });
 
   it("migrates the previous single-province storage format", () => {
-    expect(normalizeWilayah({ level1: "35", level2: ["3507"] })).toEqual({ level1: ["35"], level2: ["3507"] });
+    expect(normalizeWilayah({ level1: "35", level2: ["3507"] })).toEqual({ level1: ["35"], level2: ["3507"], splitLevel1: true });
+  });
+
+  it("extracts target provinces for sequential execution or falls back to single run", () => {
+    expect(targetProvinceCodes({ level1: [], level2: [] })).toEqual([null]);
+    expect(targetProvinceCodes({ level1: ["91", "92"], level2: [] })).toEqual(["91", "92"]);
+    expect(targetProvinceCodes({ level1: ["91", "92"], level2: [], splitLevel1: false })).toEqual([null]);
+    expect(targetProvinceCodes({ level1: ["91", "92"], level2: ["9101"] })).toEqual([null]);
+    expect(targetProvinceCodes({ level1: ["   "], level2: [] })).toEqual([null]);
   });
 });

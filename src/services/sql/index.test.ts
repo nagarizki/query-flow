@@ -11,6 +11,42 @@ it("supports starred comments and ignores an empty title", () => {
   expect(extractSqlTitle("/*\nJudul:\nCreator: Susanto\n*/", "q_1.sql")).toBe("q_1");
 });
 
+it("extracts multiline titles across lines 2, 2-3, 2-4 without truncation", () => {
+  const multilineSql = `/*
+Judul       : Tabel 1. Persentase Rumah Tangga Menurut Kabupaten/Kota
+              dan Klasifikasi Daerah Tempat Tinggal
+              di Provinsi Jawa Barat Tahun 2024
+Tujuan      : Contoh Analisis
+*/
+SELECT 1;`;
+  expect(extractSqlTitle(multilineSql, "q_1.sql"))
+    .toBe("Tabel 1. Persentase Rumah Tangga Menurut Kabupaten/Kota dan Klasifikasi Daerah Tempat Tinggal di Provinsi Jawa Barat Tahun 2024");
+
+  const starredMultiline = `/**
+ * Judul: Tabel 2.15 Jumlah Tenaga Kerja Menurut Jenis Kelamin
+ *        pada Usaha Mikro Kecil (UMK)
+ *        di Jawa Timur
+ * Pembuat: Tim Sensus
+ */`;
+  expect(extractSqlTitle(starredMultiline, "q_2.sql"))
+    .toBe("Tabel 2.15 Jumlah Tenaga Kerja Menurut Jenis Kelamin pada Usaha Mikro Kecil (UMK) di Jawa Timur");
+
+  const implicitTableTitle = `/*
+Tabel 3. Rekapitulasi Produksi
+dan Distribusi Pangan
+*/`;
+  expect(extractSqlTitle(implicitTableTitle, "q_3.sql"))
+    .toBe("Tabel 3. Rekapitulasi Produksi dan Distribusi Pangan");
+
+  const lineCommentSql = `-- Judul: Tabel 4. Ekspor Impor
+-- Komoditas Non-Migas
+-- Tahun 2024
+-- Tujuan: Laporan
+SELECT 1;`;
+  expect(extractSqlTitle(lineCommentSql, "q_4.sql"))
+    .toBe("Tabel 4. Ekspor Impor Komoditas Non-Migas Tahun 2024");
+});
+
 const sql = `
 /*
 Judul       : Nilai Produksi Konstruksi

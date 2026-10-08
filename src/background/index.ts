@@ -78,7 +78,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
         const snapshot = await loadSnapshot();
         const file = snapshot?.groups.flatMap((group) => group.files).find((file) => file.path === message.path);
         if (!file) throw new Error("File SQL tidak ditemukan dalam cache.");
-        const wilayah = await loadWilayah();
+        const wilayah = message.wilayah ?? await loadWilayah();
         const sql = applyWilayahConfig(file.content, wilayah);
         const tab = message.tabId !== undefined ? await chrome.tabs.get(message.tabId) : (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0];
         if (tab?.id === undefined) throw new Error("Buka tab SQL Lab terlebih dahulu.");

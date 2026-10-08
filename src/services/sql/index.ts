@@ -3,10 +3,51 @@ import type { WilayahConfig } from "../../types";
 const PARAMETER_VALUE = (alias: string): RegExp =>
   new RegExp(`'(?:''|[^'])*'\\s+AS\\s+${alias}\\b`, "i");
 
+const TITLE_PREFIX = /^[\t ]*(?:\*+[\t ]*)?(?:Nama[\t ]+Tabel|Judul[\t ]+Tabel|Judul)[\t ]*:[\t ]*(.*)$/i;
+const TABLE_PREFIX = /^[\t ]*(?:\*+[\t ]*)?((?:Tabel|Table)\b.*)$/i;
+const METADATA_KEY = /^(?:Tujuan|Kategori|Database(?:\/dialek)?|Dialek|Pembuat|Penyusun|Tanggal|Date|Creator|Author|Sumber|Source|Catatan|Notes?|Keterangan|Deskripsi|Description|Parameter|Filter|Versi|Version|Schema|PIC|Penanggung[\t ]+Jawab|Modul|Target|Referensi|Ref|Instansi|Unit|Status|Tipe|Type|User|Nama[\t ]+Tabel|Judul[\t ]+Tabel|Judul)[\t ]*:/i;
+
+function cleanCommentLine(line: string): string {
+  return line
+    .replace(/^[\t ]*(?:\*+[\t ]*)?/, "")
+    .replace(/(?:[\t ]+\*+)+[\t ]*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function extractSqlTitle(sql: string, fallback: string): string {
-  const comment = sql.match(/\/\*([\s\S]*?)\*\//)?.[1];
-  const title = comment?.match(/^[\t ]*(?:\*[\t ]*)?(?:Nama[\t ]+Tabel|Judul[\t ]+Tabel|Judul)[\t ]*:[\t ]*(\S[^\r\n]*)/im)?.[1]?.trim();
-  return title || fallback.replace(/\.sql$/i, "");
+  const comment = sql.match(/\/\*([\s\S]*?)\*\//)?.[1]
+    ?? sql.match(/^(?:[\t ]*--[^\r\n]*(?:\r?\n|$))+/)?.[0].replace(/^[\t ]*--[\t ]?/gm, "");
+  if (comment) {
+    const lines = comment.split(/\r?\n/);
+    let startIndex = lines.findIndex((line) => TITLE_PREFIX.test(line));
+    let initialText = "";
+
+    if (startIndex !== -1) {
+      initialText = cleanCommentLine(lines[startIndex]?.match(TITLE_PREFIX)?.[1] ?? "");
+    } else {
+      startIndex = lines.findIndex((line) => TABLE_PREFIX.test(line));
+      if (startIndex !== -1) {
+        initialText = cleanCommentLine(lines[startIndex]?.match(TABLE_PREFIX)?.[1] ?? "");
+      }
+    }
+
+    if (startIndex !== -1) {
+      const parts: string[] = [];
+      if (initialText) parts.push(initialText);
+
+      // ponytail: stops at next metadata key, empty line, or comment end; add full parser if SQL headers adopt yaml/toml.
+      for (let i = startIndex + 1; i < lines.length; i++) {
+        const cleaned = cleanCommentLine(lines[i] ?? "");
+        if (!cleaned || METADATA_KEY.test(cleaned)) break;
+        parts.push(cleaned);
+      }
+
+      if (parts.length > 0) return parts.join(" ");
+    }
+  }
+
+  return fallback.replace(/\.sql$/i, "");
 }
 
 export function applyWilayahConfig(sql: string, config: WilayahConfig): string {

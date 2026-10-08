@@ -3,6 +3,7 @@ import type { WilayahConfig } from "../../types";
 export const DEFAULT_WILAYAH: WilayahConfig = {
   level1: [],
   level2: [],
+  splitLevel1: true,
 };
 
 export interface ValidationResult {
@@ -16,6 +17,9 @@ export function validateWilayah(value: unknown): ValidationResult {
   const candidate = value as Partial<WilayahConfig>;
   validateCodes(candidate.level1, "Level 1", errors);
   validateCodes(candidate.level2, "Level 2", errors);
+  if (candidate.splitLevel1 !== undefined && typeof candidate.splitLevel1 !== "boolean") {
+    errors.push("Pilihan pisah provinsi harus berupa boolean.");
+  }
   return { valid: errors.length === 0, errors };
 }
 
@@ -32,18 +36,26 @@ function validateCodes(value: unknown, label: string, errors: string[]): void {
 
 export function normalizeWilayah(value: unknown): WilayahConfig | null {
   if (!value || typeof value !== "object") return null;
-  const candidate = value as { level1?: unknown; level2?: unknown };
+  const candidate = value as { level1?: unknown; level2?: unknown; splitLevel1?: unknown };
   const migrated = {
     level1: typeof candidate.level1 === "string"
       ? (candidate.level1.trim() ? [candidate.level1.trim()] : [])
       : candidate.level1,
     level2: candidate.level2,
+    splitLevel1: candidate.splitLevel1 === undefined ? true : Boolean(candidate.splitLevel1),
   };
   return validateWilayah(migrated).valid ? migrated as WilayahConfig : null;
 }
 
-export function addWilayahCode(config: WilayahConfig, level: keyof WilayahConfig, code: string): WilayahConfig {
+export function addWilayahCode(config: WilayahConfig, level: "level1" | "level2", code: string): WilayahConfig {
   const normalized = code.trim();
   if (!/^\d+$/.test(normalized) || config[level].includes(normalized)) return config;
   return { ...config, [level]: [...config[level], normalized] };
+}
+
+// ponytail: level2 takes precedence over level1; add nested regency loops if multi-regency batching is needed.
+export function targetProvinceCodes(config: WilayahConfig): (string | null)[] {
+  if (config.splitLevel1 === false || config.level2.length > 0 || config.level1.length === 0) return [null];
+  const list = config.level1.map((code) => code.trim()).filter(Boolean);
+  return list.length > 0 ? list : [null];
 }

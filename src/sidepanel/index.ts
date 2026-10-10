@@ -3,7 +3,7 @@ import { ChunkedExport, collectQuery } from "../services/chunked-export";
 import { applyWilayahConfig, extractSqlTitle } from "../services/sql";
 import { loadSnapshot, loadWilayah, saveSnapshot, saveWilayah } from "../services/storage";
 import { groupSqlFiles, isSqlPath } from "../services/repository-sync/files";
-import { addWilayahCode, targetProvinceCodes, validateWilayah } from "../services/wilayah";
+import { addWilayahCode, targetWilayahTargets, validateWilayah } from "../services/wilayah";
 import { TARGET, type ExtensionMessage, type RepositorySnapshot, type ScanResult, type SqlFile, type SqlRunProgress, type SqlChunkResponse, type SyncProgress, type WilayahConfig } from "../types";
 
 let snapshot: RepositorySnapshot | null = null;
@@ -12,6 +12,13 @@ let progress: SyncProgress = { phase: "idle", message: "Not synced" };
 let wilayahError = "";
 let folderRunning = false;
 const runProgressTargets = new Map<string, (progress: SqlRunProgress) => void>();
+const selectedPaths = new Set<string>();
+let combineSelected = false;
+let selectionRunning = false;
+let selectionRunId: string | null = null;
+let selectionTabId: number | null = null;
+let selectionStopRequested = false;
+let selectionController = new AbortController();
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("App container is missing.");
@@ -67,6 +74,10 @@ app.innerHTML = `
           <button id="confirm-level2" type="button">Tambah</button>
         </div>
         <button id="show-level2-add" class="text-button" type="button">＋ Tambah Kabupaten/Kota</button>
+        <label class="checkbox-row">
+          <input id="split-level2" type="checkbox" checked />
+          <span>Pisahkan file Excel per Kabupaten/Kota</span>
+        </label>
       </div>
       <p id="wilayah-error" class="error" aria-live="polite"></p>
       <p id="wilayah-mode" class="field-note"></p>
@@ -86,6 +97,18 @@ app.innerHTML = `
         </div>
       </details>
       <div id="empty-groups" class="empty-state">Import folder SQL untuk melihat daftar query dan menjalankannya di FASIH SQL Lab.</div>
+      <div id="selection-bar" class="selection-bar" hidden>
+        <span id="selection-count" class="selection-count">0 file dipilih</span>
+        <label class="checkbox-row selection-combine">
+          <input id="combine-selected" type="checkbox" />
+          <span>Gabung 1 Excel</span>
+        </label>
+        <div class="selection-actions">
+          <button id="run-selected" class="secondary-button" type="button">▶ Run Terpilih → Excel</button>
+          <button id="clear-selected" class="text-button" type="button">Hapus seleksi</button>
+        </div>
+      </div>
+      <p id="selection-status" class="progress" role="status"></p>
       <div id="groups" class="groups"></div>
     </section>
     <footer class="author-credit">initiated by D.Agung Sungkono</footer>
@@ -147,15 +170,16 @@ function renderWilayah(): void {
   renderCodeList("level2-list", "Level 2", wilayah.level2, (index, code) => updateCode("level2", index, code), (index) => removeCode("level2", index));
   byId("wilayah-error").textContent = wilayahError;
   byId<HTMLInputElement>("split-level1").checked = wilayah.splitLevel1 !== false;
-  byId("wilayah-mode").textContent = wilayah.level2.length > 0 && wilayah.level1.length > 0
-    ? "Filter aktif: Kabupaten/Kota. Daftar provinsi diabaikan selama Level 2 terisi."
-    : wilayah.level2.length > 0
-      ? "Filter aktif: Kabupaten/Kota."
-      : wilayah.level1.length > 0
-        ? (wilayah.splitLevel1 !== false
-            ? "Filter aktif: loop sekuensial per provinsi (1 file Excel per provinsi)."
-            : "Filter aktif: seluruh provinsi terpilih digabung dalam 1 file Excel.")
-        : "Filter wilayah kosong: semua wilayah akan dijalankan.";
+  byId<HTMLInputElement>("split-level2").checked = wilayah.splitLevel2 !== false;
+  byId("wilayah-mode").textContent = wilayah.level2.length > 0
+    ? (wilayah.splitLevel2 !== false
+        ? "Filter aktif: loop sekuensial per kabupaten/kota (1 file Excel per kabupaten/kota)."
+        : "Filter aktif: seluruh kabupaten/kota terpilih digabung dalam 1 file Excel. Daftar provinsi diabaikan selama Level 2 terisi.")
+    : wilayah.level1.length > 0
+      ? (wilayah.splitLevel1 !== false
+          ? "Filter aktif: loop sekuensial per provinsi (1 file Excel per provinsi)."
+          : "Filter aktif: seluruh provinsi terpilih digabung dalam 1 file Excel.")
+      : "Filter wilayah kosong: semua wilayah akan dijalankan.";
 }
 
 function renderCodeList(
@@ -186,14 +210,124 @@ function renderCodeList(
   });
 }
 
+function allSnapshotFiles(): SqlFile[] {
+  return (snapshot?.groups ?? []).flatMap((group) => group.files);
+}
+
+function pruneSelection(): void {
+  const existing = new Set(allSnapshotFiles().map((file) => file.path));
+  for (const path of [...selectedPaths]) {
+    if (!existing.has(path)) selectedPaths.delete(path);
+  }
+}
+
+function selectedFilesOrdered(): SqlFile[] {
+  const wanted = new Set(selectedPaths);
+  return allSnapshotFiles().filter((file) => wanted.has(file.path));
+}
+
+function selectionExportBase(files: SqlFile[]): string {
+  const first = files[0]?.path.replace(/\.sql$/i, "") ?? "seleksi";
+  const folder = first.includes("/") ? first.slice(0, first.lastIndexOf("/")) : "seleksi";
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+  return `${folder}/seleksi_${files.length}file_${stamp}`;
+}
+
+function updateSelectionBar(): void {
+  const bar = byId("selection-bar");
+  const count = byId("selection-count");
+  const runButton = byId<HTMLButtonElement>("run-selected");
+  bar.hidden = selectedPaths.size === 0;
+  count.textContent = `${selectedPaths.size} file dipilih`;
+  // Keep Stop clickable while the selection run itself is active.
+  runButton.disabled = (folderRunning && !selectionRunning) || selectedPaths.size === 0;
+  byId<HTMLInputElement>("combine-selected").checked = combineSelected;
+}
+
+interface QueueFileHooks {
+  report: (message: string) => void;
+  isStopped: () => boolean;
+  signal: AbortSignal;
+  tabId: number;
+  trackRun: (runId: string) => void;
+  untrackRun: (runId: string) => void;
+}
+
+async function runOneFile(
+  file: SqlFile,
+  activeConfig: WilayahConfig,
+  output: ChunkedExport,
+  hooks: QueueFileHooks,
+): Promise<void> {
+  const runId = createRunId();
+  hooks.trackRun(runId);
+  let pending: Promise<SqlChunkResponse> | undefined;
+  try {
+    await collectQuery(
+      (offset, limit, iteration) => pending = chrome.runtime.sendMessage({
+        type: "RUN_SQL_FILE",
+        path: file.path,
+        tabId: hooks.tabId,
+        runId,
+        offset,
+        limit,
+        iteration,
+        wilayah: activeConfig,
+      } satisfies ExtensionMessage) as Promise<SqlChunkResponse>,
+      async (columns, rows) => {
+        await output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows });
+        if (output.needsIntermediateFlush) {
+          await output.flushIntermediate((message) => { hooks.report(message); });
+        }
+      },
+      hooks.isStopped,
+      (message) => { hooks.report(message); },
+      hooks.signal,
+    );
+  } finally {
+    hooks.untrackRun(runId);
+    // Keep cancellation active until the outstanding request settles.
+    void (pending ?? Promise.resolve()).then(() => clearRun(runId, hooks.tabId), () => clearRun(runId, hooks.tabId));
+  }
+}
+
 function renderGroups(): void {
   const groupsElement = byId("groups");
+  // Preserve open <details> across re-renders triggered by selection toggles.
+  const openPaths = new Set(
+    [...groupsElement.querySelectorAll("details.open")].map((item) => (item as HTMLElement).dataset.path ?? ""),
+  );
   groupsElement.replaceChildren();
+  pruneSelection();
   byId("empty-groups").hidden = Boolean(snapshot?.groups.length);
   for (const group of snapshot?.groups ?? []) {
     const details = document.createElement("details");
     details.className = "group";
+    details.dataset.path = group.path;
+    if (openPaths.has(group.path)) details.open = true;
     const summary = document.createElement("summary");
+    const groupCheckbox = document.createElement("input");
+    groupCheckbox.type = "checkbox";
+    groupCheckbox.className = "select-box";
+    groupCheckbox.setAttribute("aria-label", `Pilih semua file di ${group.path}`);
+    const groupPaths = group.files.map((file) => file.path);
+    const selectedInGroup = groupPaths.filter((path) => selectedPaths.has(path)).length;
+    groupCheckbox.checked = group.files.length > 0 && selectedInGroup === group.files.length;
+    groupCheckbox.indeterminate = selectedInGroup > 0 && selectedInGroup < group.files.length;
+    groupCheckbox.addEventListener("click", (event) => event.stopPropagation());
+    groupCheckbox.addEventListener("change", () => {
+      if (folderRunning) {
+        groupCheckbox.checked = !groupCheckbox.checked;
+        byId("selection-status").textContent = "Tunggu run selesai untuk mengubah seleksi.";
+        return;
+      }
+      if (groupCheckbox.checked) {
+        for (const path of groupPaths) selectedPaths.add(path);
+      } else {
+        for (const path of groupPaths) selectedPaths.delete(path);
+      }
+      renderGroups();
+    });
     const heading = document.createElement("span");
     heading.className = "group-name";
     const repeatedName = (snapshot?.groups ?? []).filter((candidate) => candidate.name === group.name).length > 1;
@@ -201,7 +335,7 @@ function renderGroups(): void {
     const meta = document.createElement("span");
     meta.className = "group-count";
     meta.textContent = `${group.path} · ${group.files.length} SQL file${group.files.length === 1 ? "" : "s"}`;
-    summary.append(heading, meta);
+    summary.append(groupCheckbox, heading, meta);
     const files = document.createElement("div");
     files.className = "file-list";
     const batch = document.createElement("button");
@@ -232,64 +366,46 @@ function renderGroups(): void {
       batchController = new AbortController();
       batch.textContent = "■ Stop";
       batch.classList.add("stop-button");
-      const targetProvinces = targetProvinceCodes(wilayah);
+      const targets = targetWilayahTargets(wilayah);
       let currentOutput: ChunkedExport | null = null;
       let currentPrefix = "";
       try {
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
         batchTabId = tab.id;
-        for (const [provIndex, prov] of targetProvinces.entries()) {
+        for (const [targetIndex, wilayahTarget] of targets.entries()) {
           if (batchStopRequested) throw new Error("Run Folder dihentikan oleh pengguna.");
-          const activeConfig: WilayahConfig = prov ? { level1: [prov], level2: [] } : wilayah;
-          const exportPath = prov ? `${group.path}_${prov}` : group.path;
+          const activeConfig: WilayahConfig = wilayahTarget.config;
+          const exportPath = wilayahTarget.code ? `${group.path}_${wilayahTarget.code}` : group.path;
           const output = new ChunkedExport(exportPath);
           currentOutput = output;
-          const provPrefix = prov ? `Provinsi ${prov} [${provIndex + 1}/${targetProvinces.length}] - ` : "";
+          const provPrefix = wilayahTarget.code ? `${wilayahTarget.label} [${targetIndex + 1}/${targets.length}] - ` : "";
           currentPrefix = provPrefix;
           for (const [index, file] of group.files.entries()) {
             if (batchStopRequested) throw new Error("Run Folder dihentikan oleh pengguna.");
             batchStatus.textContent = `${provPrefix}File ${index + 1}/${group.files.length}: ${file.name} — menunggu hasil. Tetap buka panel dan tab query ini.`;
-            const runId = createRunId();
-            batchRunId = runId;
-            runProgressTargets.set(runId, (runProgress) => {
-              batchStatus.textContent = `${provPrefix}File ${index + 1}/${group.files.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
+            await runOneFile(file, activeConfig, output, {
+              tabId: tab.id!,
+              signal: batchController.signal,
+              isStopped: () => batchStopRequested,
+              report: (message) => { batchStatus.textContent = `${provPrefix}File ${index + 1}/${group.files.length}: ${file.name} — ${message}`; },
+              trackRun: (runId) => {
+                batchRunId = runId;
+                runProgressTargets.set(runId, (runProgress) => {
+                  batchStatus.textContent = `${provPrefix}File ${index + 1}/${group.files.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
+                });
+              },
+              untrackRun: (runId) => {
+                runProgressTargets.delete(runId);
+                // Keep the Stop action available between files and while exporting.
+              },
             });
-            let pending: Promise<SqlChunkResponse> | undefined;
-            try {
-              await collectQuery(
-                (offset, limit, iteration) => pending = chrome.runtime.sendMessage({
-                  type: "RUN_SQL_FILE",
-                  path: file.path,
-                  tabId: tab.id!,
-                  runId,
-                  offset,
-                  limit,
-                  iteration,
-                  wilayah: activeConfig,
-                } satisfies ExtensionMessage) as Promise<SqlChunkResponse>,
-                async (columns, rows) => {
-                  await output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows });
-                  if (output.needsIntermediateFlush) {
-                    await output.flushIntermediate((message) => { batchStatus.textContent = `${provPrefix}${message}`; });
-                  }
-                },
-                () => batchStopRequested,
-                (message) => { batchStatus.textContent = `${provPrefix}${message}`; },
-                batchController.signal,
-              );
-            } finally {
-              runProgressTargets.delete(runId);
-              // Keep cancellation active until the outstanding request settles.
-              void (pending ?? Promise.resolve()).then(() => clearRun(runId, tab.id!), () => clearRun(runId, tab.id!));
-              // Keep the Stop action available between files and while exporting.
-            }
           }
           batchStatus.textContent = `${provPrefix}Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
           await output.flush(true);
         }
-        batchStatus.textContent = targetProvinces.length > 1
-          ? `Selesai: ${targetProvinces.length} provinsi berhasil diproses.`
+        batchStatus.textContent = targets.length > 1
+          ? `Selesai: ${targets.length} ${targets[0]?.kind === "kab" ? "kabupaten/kota" : "provinsi"} berhasil diproses.`
           : `Selesai: ${currentOutput?.totalRows.toLocaleString("id-ID") ?? 0} baris · ${currentOutput?.parts ?? 0} file Excel diunduh.`;
       } catch (error) {
         batchStatus.textContent = currentOutput
@@ -307,6 +423,23 @@ function renderGroups(): void {
     });
     files.append(batch, batchStatus);
     for (const file of group.files) {
+      const select = document.createElement("input");
+      select.type = "checkbox";
+      select.className = "select-box";
+      select.checked = selectedPaths.has(file.path);
+      select.setAttribute("aria-label", `Pilih ${file.path}`);
+      select.addEventListener("change", () => {
+        if (folderRunning) {
+          select.checked = !select.checked;
+          byId("selection-status").textContent = "Tunggu run selesai untuk mengubah seleksi.";
+          return;
+        }
+        if (select.checked) selectedPaths.add(file.path);
+        else selectedPaths.delete(file.path);
+        updateSelectionBar();
+        // Refresh group header indeterminate state while keeping open <details>.
+        renderGroups();
+      });
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = file.name;
@@ -351,63 +484,44 @@ function renderGroups(): void {
         folderRunning = true;
         stopRequested = false;
         controller = new AbortController();
-        const targetProvinces = targetProvinceCodes(wilayah);
+        const targets = targetWilayahTargets(wilayah);
         const basePath = file.path.replace(/\.sql$/i, "");
         let currentOutput: ChunkedExport | null = null;
         let currentPrefix = "";
-        let tabId: number | undefined;
         try {
           const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
           if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
-          tabId = tab.id;
           run.textContent = "■ Stop";
           run.classList.add("stop-button");
-          for (const [provIndex, prov] of targetProvinces.entries()) {
+          for (const [targetIndex, wilayahTarget] of targets.entries()) {
             if (stopRequested) throw new Error("Run dihentikan oleh pengguna.");
-            const activeConfig: WilayahConfig = prov ? { level1: [prov], level2: [] } : wilayah;
-            const exportPath = prov ? `${basePath}_${prov}` : basePath;
+            const activeConfig: WilayahConfig = wilayahTarget.config;
+            const exportPath = wilayahTarget.code ? `${basePath}_${wilayahTarget.code}` : basePath;
             const output = new ChunkedExport(exportPath);
             currentOutput = output;
-            const provPrefix = prov ? `Provinsi ${prov} [${provIndex + 1}/${targetProvinces.length}] - ` : "";
+            const provPrefix = wilayahTarget.code ? `${wilayahTarget.label} [${targetIndex + 1}/${targets.length}] - ` : "";
             currentPrefix = provPrefix;
             status.textContent = `${provPrefix}Mengirim SQL ke editor aktif...`;
-            const runId = createRunId();
-            activeRun = { runId, tabId };
-            runProgressTargets.set(runId, (runProgress) => {
-              status.textContent = `${provPrefix}${formatRunProgress(runProgress)}`;
+            await runOneFile(file, activeConfig, output, {
+              tabId: tab.id!,
+              signal: controller.signal,
+              isStopped: () => stopRequested,
+              report: (message) => { status.textContent = `${provPrefix}${message}`; },
+              trackRun: (runId) => {
+                activeRun = { runId, tabId: tab.id! };
+                runProgressTargets.set(runId, (runProgress) => {
+                  status.textContent = `${provPrefix}${formatRunProgress(runProgress)}`;
+                });
+              },
+              untrackRun: (runId) => {
+                runProgressTargets.delete(runId);
+              },
             });
-            let pending: Promise<SqlChunkResponse> | undefined;
-            try {
-              await collectQuery(
-                (offset, limit, iteration) => pending = chrome.runtime.sendMessage({
-                  type: "RUN_SQL_FILE",
-                  path: file.path,
-                  tabId: tab.id!,
-                  runId,
-                  offset,
-                  limit,
-                  iteration,
-                  wilayah: activeConfig,
-                } satisfies ExtensionMessage) as Promise<SqlChunkResponse>,
-                async (columns, rows) => {
-                  await output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows });
-                  if (output.needsIntermediateFlush) {
-                    await output.flushIntermediate((message) => { status.textContent = `${provPrefix}${message}`; });
-                  }
-                },
-                () => stopRequested,
-                (message) => { status.textContent = `${provPrefix}${message}`; },
-                controller.signal,
-              );
-            } finally {
-              runProgressTargets.delete(runId);
-              void (pending ?? Promise.resolve()).then(() => clearRun(runId, tab.id!), () => clearRun(runId, tab.id!));
-            }
             status.textContent = `${provPrefix}Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
             await output.flush(true);
           }
-          status.textContent = targetProvinces.length > 1
-            ? `Selesai: ${targetProvinces.length} provinsi berhasil diproses.`
+          status.textContent = targets.length > 1
+            ? `Selesai: ${targets.length} ${targets[0]?.kind === "kab" ? "kabupaten/kota" : "provinsi"} berhasil diproses.`
             : `Selesai: ${currentOutput?.totalRows.toLocaleString("id-ID") ?? 0} baris · ${currentOutput?.parts ?? 0} file Excel diunduh.`;
         } catch (error) {
           status.textContent = currentOutput
@@ -423,11 +537,124 @@ function renderGroups(): void {
         }
       });
       actions.append(copy, run);
-      row.append(button, actions);
+      row.append(select, button, actions);
       files.append(row, status);
     }
     details.append(summary, files);
     groupsElement.append(details);
+  }
+  updateSelectionBar();
+}
+
+async function runSelected(): Promise<void> {
+  const statusEl = byId("selection-status");
+  const runButton = byId<HTMLButtonElement>("run-selected");
+  if (folderRunning) {
+    if (!selectionRunId || selectionTabId === null) {
+      statusEl.textContent = "Run lain masih berjalan.";
+      return;
+    }
+    selectionStopRequested = true;
+    selectionController.abort();
+    runButton.disabled = true;
+    runButton.textContent = "■ Stopping…";
+    void stopRun(selectionRunId, selectionTabId);
+    return;
+  }
+  const files = selectedFilesOrdered();
+  if (files.length === 0) {
+    statusEl.textContent = "Pilih minimal 1 file lintas folder untuk dijalankan.";
+    return;
+  }
+  folderRunning = true;
+  selectionRunning = true;
+  updateSelectionBar();
+  selectionStopRequested = false;
+  selectionController = new AbortController();
+  runButton.textContent = "■ Stop";
+  const targets = targetWilayahTargets(wilayah);
+  const combine = combineSelected;
+  let currentOutput: ChunkedExport | null = null;
+  let currentPrefix = "";
+  let doneFiles = 0;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
+    selectionTabId = tab.id;
+    for (const [targetIndex, wilayahTarget] of targets.entries()) {
+      if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+      const targetPrefix = wilayahTarget.code ? `${wilayahTarget.label} [${targetIndex + 1}/${targets.length}] - ` : "";
+      if (combine) {
+        const exportPath = wilayahTarget.code
+          ? `${selectionExportBase(files)}_${wilayahTarget.code}`
+          : selectionExportBase(files);
+        const output = new ChunkedExport(exportPath);
+        currentOutput = output;
+        currentPrefix = targetPrefix;
+        for (const [index, file] of files.entries()) {
+          if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+          statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.path} — menunggu hasil. Tetap buka panel dan tab query ini.`;
+          await runOneFile(file, wilayahTarget.config, output, {
+            tabId: tab.id!,
+            signal: selectionController.signal,
+            isStopped: () => selectionStopRequested,
+            report: (message) => { statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${message}`; },
+            trackRun: (runId) => {
+              selectionRunId = runId;
+              runProgressTargets.set(runId, (runProgress) => {
+                statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
+              });
+            },
+            untrackRun: (runId) => { runProgressTargets.delete(runId); },
+          });
+          doneFiles++;
+        }
+        statusEl.textContent = `${targetPrefix}Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
+        await output.flush(true);
+      } else {
+        for (const [index, file] of files.entries()) {
+          if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+          const basePath = file.path.replace(/\.sql$/i, "");
+          const exportPath = wilayahTarget.code ? `${basePath}_${wilayahTarget.code}` : basePath;
+          const output = new ChunkedExport(exportPath);
+          currentOutput = output;
+          currentPrefix = targetPrefix;
+          await runOneFile(file, wilayahTarget.config, output, {
+            tabId: tab.id!,
+            signal: selectionController.signal,
+            isStopped: () => selectionStopRequested,
+            report: (message) => { statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${message}`; },
+            trackRun: (runId) => {
+              selectionRunId = runId;
+              runProgressTargets.set(runId, (runProgress) => {
+                statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
+              });
+            },
+            untrackRun: (runId) => { runProgressTargets.delete(runId); },
+          });
+          doneFiles++;
+          statusEl.textContent = `${targetPrefix}Menulis Excel akhir (${file.name}): ${output.totalRows.toLocaleString("id-ID")} baris terkumpul…`;
+          await output.flush(true);
+        }
+      }
+    }
+    const unit = targets.length > 1 ? (targets[0]?.kind === "kab" ? "kabupaten/kota" : "provinsi") : "";
+    statusEl.textContent = targets.length > 1
+      ? `Selesai: ${doneFiles} file × ${targets.length} ${unit} berhasil diproses.`
+      : `Selesai: ${doneFiles} file berhasil diproses · ${currentOutput?.totalRows.toLocaleString("id-ID") ?? 0} baris · ${currentOutput?.parts ?? 0} file Excel diunduh.`;
+  } catch (error) {
+    statusEl.textContent = currentOutput
+      ? `${currentPrefix}${await finishPartial(currentOutput, error)}`
+      : (error instanceof Error ? error.message : "Run Terpilih gagal.");
+  } finally {
+    folderRunning = false;
+    selectionRunning = false;
+    selectionRunId = null;
+    selectionTabId = null;
+    selectionStopRequested = false;
+    runButton.disabled = false;
+    runButton.textContent = "▶ Run Terpilih → Excel";
+    updateSelectionBar();
   }
 }
 
@@ -639,6 +866,20 @@ byId<HTMLInputElement>("split-level1").addEventListener("change", async (event) 
   await persistWilayah({ ...wilayah, splitLevel1: target.checked });
   renderWilayah();
 });
+byId<HTMLInputElement>("split-level2").addEventListener("change", async (event) => {
+  const target = event.target as HTMLInputElement;
+  await persistWilayah({ ...wilayah, splitLevel2: target.checked });
+  renderWilayah();
+});
 byId("close-preview").addEventListener("click", () => byId<HTMLDialogElement>("preview-dialog").close());
+byId<HTMLButtonElement>("run-selected").addEventListener("click", () => void runSelected());
+byId("clear-selected").addEventListener("click", () => {
+  selectedPaths.clear();
+  byId("selection-status").textContent = "";
+  renderGroups();
+});
+byId<HTMLInputElement>("combine-selected").addEventListener("change", (event) => {
+  combineSelected = (event.target as HTMLInputElement).checked;
+});
 
 void initialize();

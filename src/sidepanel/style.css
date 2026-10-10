@@ -62,7 +62,8 @@ input:focus { border-color: #39745a; box-shadow: 0 0 0 3px rgba(57,116,90,.12); 
 .run-guide-content ul { margin: 0; padding-left: 15px; }
 .run-guide-content li + li { margin-top: 3px; }
 .group { overflow: hidden; border: 1px solid #c4ccc6; border-radius: 7px; background: rgba(255,255,255,.6); }
-.group summary { position: relative; display: grid; gap: 3px; padding: 11px 34px 11px 12px; list-style: none; cursor: pointer; }
+.group summary { position: relative; display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; padding: 11px 34px 11px 12px; list-style: none; cursor: pointer; align-items: center; }
+.group summary .group-name, .group summary .group-count { grid-column: 2; }
 .group summary::-webkit-details-marker { display: none; }
 .group summary::after { content: "›"; position: absolute; top: 14px; right: 14px; transition: transform .15s; }
 .group[open] summary::after { transform: rotate(90deg); }
@@ -71,7 +72,15 @@ input:focus { border-color: #39745a; box-shadow: 0 0 0 3px rgba(57,116,90,.12); 
 .file-list { display: grid; padding: 5px 8px 9px; border-top: 1px solid #d7dcd7; }
 .file-list button { overflow: hidden; padding: 7px 8px; border: 0; border-radius: 4px; color: #42534b; background: transparent; font: 11px ui-monospace, SFMono-Regular, monospace; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .file-list button:hover { color: #1f503b; background: #e6eee8; }
-.file-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; }
+.selection-bar { display: grid; gap: 6px; margin-bottom: 8px; padding: 10px; border: 1px solid #39745a; border-radius: 8px; background: rgba(255,255,255,.75); }
+.selection-bar[hidden] { display: none; }
+.selection-count { font-size: 12px; font-weight: 750; color: #295f48; }
+.selection-combine { margin-top: 0; }
+.selection-actions { display: grid; gap: 6px; }
+.selection-actions .secondary-button { width: 100%; }
+.select-box { width: auto; margin: 0; cursor: pointer; accent-color: #295f48; }
+.group summary .select-box { flex: none; align-self: center; }
+.file-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4px; }
 .file-actions { display: flex; align-items: center; gap: 2px; }
 .file-actions button { flex: none; }
 .file-list .stop-button { color: #a0392f; background: #f7e9e6; font-weight: 750; }

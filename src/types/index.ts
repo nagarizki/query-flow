@@ -36,6 +36,7 @@ export interface WilayahConfig {
   level1: string[];
   level2: string[];
   splitLevel1?: boolean;
+  splitLevel2?: boolean;
 }
 
 export type SyncPhase =

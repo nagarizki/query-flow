@@ -1,4 +1,5 @@
 import type { WilayahConfig } from "../../types";
+import { regenciesOfProvince, type RegionRegency } from "./regions";
 
 export const DEFAULT_WILAYAH: WilayahConfig = {
   level1: [],
@@ -78,6 +79,35 @@ export interface WilayahTarget {
   config: WilayahConfig;
 }
 
+export interface RegencyExpansion {
+  /** Regencies resolved from known province codes, in Level 1 order. */
+  regencies: RegionRegency[];
+  /** Level 1 codes absent from the master data (typo or newer pemekaran). */
+  unknownProvinces: string[];
+}
+
+/**
+ * Resolves Level 1 province codes to their regencies via the bundled BPS master
+ * data. ONLY explicitly listed provinces are expanded — never the whole country,
+ * since each user can access a different subset of regions.
+ */
+export function expandProvincesToRegencies(level1: string[]): RegencyExpansion {
+  const regencies: RegionRegency[] = [];
+  const unknownProvinces: string[] = [];
+  for (const code of level1.map((entry) => entry.trim()).filter(Boolean)) {
+    const resolved = regenciesOfProvince(code);
+    if (resolved.length === 0) unknownProvinces.push(code);
+    else regencies.push(...resolved);
+  }
+  return { regencies, unknownProvinces };
+}
+
+/** Summary for UI hints without building full run targets. */
+export function describeRegencyExpansion(config: WilayahConfig): RegencyExpansion {
+  if (config.level2.length > 0 || config.splitLevel2 === false) return { regencies: [], unknownProvinces: [] };
+  return expandProvincesToRegencies(config.level1);
+}
+
 export function targetWilayahTargets(config: WilayahConfig): WilayahTarget[] {
   const regencies = targetRegencyCodes(config);
   if (config.level2.length > 0 && !(regencies.length === 1 && regencies[0] === null)) {
@@ -87,6 +117,29 @@ export function targetWilayahTargets(config: WilayahConfig): WilayahTarget[] {
       label: code ? `Kab ${code}` : "",
       config: code ? { level1: [], level2: [code], splitLevel1: config.splitLevel1, splitLevel2: config.splitLevel2 } : config,
     }));
+  }
+  // Auto-expand: kab-split is on but no explicit kab list — resolve regencies
+  // from the selected provinces. Finer grain wins over the province loop when
+  // both split checkboxes are on; each kab file still belongs to one province.
+  if (config.splitLevel2 !== false) {
+    const { regencies: expanded, unknownProvinces } = expandProvincesToRegencies(config.level1);
+    if (expanded.length > 0 || unknownProvinces.length > 0) {
+      const kabTargets = expanded.map((entry) => ({
+        code: entry.code as string | null,
+        kind: "kab" as const,
+        label: `Kab ${entry.code}`,
+        config: { level1: [], level2: [entry.code], splitLevel1: config.splitLevel1, splitLevel2: config.splitLevel2 },
+      }));
+      // Unknown province codes cannot be expanded; run them at province level
+      // instead of failing so typos stay visible in the run log.
+      const provFallbacks = unknownProvinces.map((code) => ({
+        code: code as string | null,
+        kind: "prov" as const,
+        label: `Provinsi ${code}`,
+        config: { level1: [code], level2: [], splitLevel1: config.splitLevel1, splitLevel2: config.splitLevel2 },
+      }));
+      return [...kabTargets, ...provFallbacks];
+    }
   }
   const provinces = targetProvinceCodes(config);
   if (!(provinces.length === 1 && provinces[0] === null)) {

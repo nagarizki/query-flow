@@ -123,7 +123,7 @@ describe("automatic chunk collection", () => {
     const request = vi.fn<() => Promise<SqlChunkResponse>>()
       .mockResolvedValueOnce(chunk([[2]], true))
       .mockImplementationOnce(() => { controller.abort(); return pending; });
-    await expect(collectQuery(request, (_, rows) => output.append(result(rows, "b.sql")), () => controller.signal.aborted, vi.fn(), controller.signal)).rejects.toThrow("dihentikan");
+    await expect(collectQuery(request, (_, rows) => output.append(result(rows, "b.sql")), () => controller.signal.aborted, vi.fn(), controller.signal, { minIntervalMs: 0 })).rejects.toThrow("dihentikan");
     await output.flush(true, true);
     expect(saved).toEqual([{ path: "folder_partial", results: [result([[1]]), result([[2]], "b.sql")] }]);
     finish(chunk([[3]]));
@@ -138,7 +138,7 @@ describe("automatic chunk collection", () => {
       .mockResolvedValueOnce(chunk([[3]], true))
       .mockResolvedValueOnce(chunk([]));
     const accept = vi.fn(async () => {});
-    await collectQuery(request, accept, () => false, vi.fn());
+    await collectQuery(request, accept, () => false, vi.fn(), undefined, { minIntervalMs: 0 });
     expect(request.mock.calls).toEqual([[0, 9000, 1], [2, 2, 2], [2, 1, 2], [3, 1, 3]]);
     expect(accept).toHaveBeenCalledTimes(2);
   });
@@ -148,7 +148,7 @@ describe("automatic chunk collection", () => {
     const output = new ChunkedExport("folder", download, undefined, serialize);
     let stopped = false;
     const request = vi.fn(async () => { stopped = true; return chunk([[1], [2]], true); });
-    await expect(collectQuery(request, (columns, rows) => output.append({ ...result(rows), columns }), () => stopped, vi.fn())).rejects.toThrow("dihentikan");
+    await expect(collectQuery(request, (columns, rows) => output.append({ ...result(rows), columns }), () => stopped, vi.fn(), undefined, { minIntervalMs: 0 })).rejects.toThrow("dihentikan");
     await output.flush(true, true);
     expect(request).toHaveBeenCalledTimes(1);
     expect(saved[0]?.results[0]?.rows).toEqual([[1], [2]]);
@@ -161,7 +161,7 @@ describe("automatic chunk collection", () => {
     const request = vi.fn<() => Promise<SqlChunkResponse>>()
       .mockResolvedValueOnce(chunk([[1]], true))
       .mockRejectedValueOnce(new Error("Syntax error"));
-    await expect(collectQuery(request, (_, rows) => output.append(result(rows)), () => false, vi.fn())).rejects.toThrow("Syntax error");
+    await expect(collectQuery(request, (_, rows) => output.append(result(rows)), () => false, vi.fn(), undefined, { minIntervalMs: 0 })).rejects.toThrow("Syntax error");
     await output.flush(true, true);
     expect(saved).toEqual([{ path: "folder_partial", results: [result([[0]], "previous.sql"), result([[1]])] }]);
     expect(request).toHaveBeenCalledTimes(2);
@@ -174,7 +174,7 @@ describe("automatic chunk collection", () => {
       .mockResolvedValueOnce(chunk([[2]]));
     const accept = vi.fn(async () => {});
     const report = vi.fn();
-    await collectQuery(request, accept, () => false, report, undefined, { retryDelayMs: 0 });
+    await collectQuery(request, accept, () => false, report, undefined, { retryDelayMs: 0, minIntervalMs: 0 });
     expect(request.mock.calls).toEqual([[0, 9000, 1], [0, 9000, 1], [1, 1, 2]]);
     expect(accept).toHaveBeenCalledTimes(2);
     expect(report.mock.calls.some(([message]) => /mencoba ulang 1\/3/i.test(String(message)))).toBe(true);
@@ -185,19 +185,38 @@ describe("automatic chunk collection", () => {
       .mockResolvedValueOnce({ ok: false, message: "Query masih berjalan. Tunggu selesai." })
       .mockResolvedValueOnce(chunk([[1]]));
     const accept = vi.fn(async () => {});
-    await collectQuery(request, accept, () => false, vi.fn(), undefined, { retryDelayMs: 0 });
+    await collectQuery(request, accept, () => false, vi.fn(), undefined, { retryDelayMs: 0, minIntervalMs: 0 });
     expect(request).toHaveBeenCalledTimes(2);
     expect(accept).toHaveBeenCalledTimes(1);
   });
 
   it("gives up after repeated transient failures", async () => {
     const request = vi.fn(async (): Promise<SqlChunkResponse> => ({ ok: false, message: "Could not establish connection. Receiving end does not exist." }));
-    await expect(collectQuery(request, vi.fn(), () => false, vi.fn(), undefined, { retryDelayMs: 0 })).rejects.toThrow("Receiving end");
+    await expect(collectQuery(request, vi.fn(), () => false, vi.fn(), undefined, { retryDelayMs: 0, minIntervalMs: 0 })).rejects.toThrow("Receiving end");
     expect(request).toHaveBeenCalledTimes(4);
   });
   it("terminates retries even if a single row cannot be fetched", async () => {
     const request = vi.fn(async () => ({ ok: false as const, message: "Payload too large" }));
-    await expect(collectQuery(request, vi.fn(), () => false, vi.fn())).rejects.toThrow("Payload too large");
+    await expect(collectQuery(request, vi.fn(), () => false, vi.fn(), undefined, { minIntervalMs: 0 })).rejects.toThrow("Payload too large");
     expect(request.mock.calls.length).toBeLessThan(16);
+  });
+
+  it("retries 429 rate-limit at the same offset instead of aborting the batch", async () => {
+    const request = vi.fn<(...args: number[]) => Promise<SqlChunkResponse>>()
+      .mockResolvedValueOnce({ ok: false, message: "DB engine Error 429 Too Many Requests: 30 per 1 minute" })
+      .mockResolvedValueOnce(chunk([[1]], true))
+      .mockResolvedValueOnce(chunk([[2]]));
+    const accept = vi.fn(async () => {});
+    const report = vi.fn();
+    await collectQuery(request, accept, () => false, report, undefined, { minIntervalMs: 0, rateLimitDelayMs: 0 });
+    expect(request.mock.calls).toEqual([[0, 9000, 1], [0, 9000, 1], [1, 1, 2]]);
+    expect(accept).toHaveBeenCalledTimes(2);
+    expect(report.mock.calls.some(([message]) => /batas DB.*30 query/i.test(String(message)))).toBe(true);
+  });
+
+  it("gives up after repeated 429 rate-limits", async () => {
+    const request = vi.fn(async (): Promise<SqlChunkResponse> => ({ ok: false, message: "429 Too Many Requests: 30 per 1 minute" }));
+    await expect(collectQuery(request, vi.fn(), () => false, vi.fn(), undefined, { minIntervalMs: 0, rateLimitDelayMs: 0, rateLimitRetries: 2 })).rejects.toThrow("429");
+    expect(request).toHaveBeenCalledTimes(3);
   });
 });

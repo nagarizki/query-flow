@@ -98,11 +98,29 @@ export class ChunkedExport {
 /** Errors worth retrying at the same offset instead of aborting the batch. */
 export const TRANSIENT_RUN_ERROR = /message channel closed|receiving end does not exist|could not establish connection|message port closed|disconnected|service worker|worker.*terminat|koneksi sql lab terputus|query masih berjalan/i;
 
+/**
+ * DB engine rate limit, e.g. "DB engine Error 429 Too Many Requests:
+ * 30 per 1 minute". Ditangani terpisah dengan jeda panjang (bukan retry
+ * transient biasa) agar batch tidak langsung gagal.
+ */
+export const RATE_LIMIT_ERROR = /429|too many requests|\b30 per\b|rate.?limit|throttl/i;
+
+/** Jeda antar query agar di bawah limit 30 query/menit (≈1 query per 2 dtk). */
+export const MIN_CHUNK_INTERVAL_MS = 2500;
+/** Jeda tunggu saat kena 429 sebelum coba lagi pada offset yang sama. */
+export const RATE_LIMIT_DELAY_MS = 65_000;
+
 export interface CollectQueryOptions {
   /** Max retries per offset for transient errors. Defaults to 3. */
   transientRetries?: number;
   /** Base delay between transient retries (multiplied by attempt). Defaults to 2000 ms. */
   retryDelayMs?: number;
+  /** Min delay between chunk requests (pacing). Defaults to 2500 ms. Set 0 in tests. */
+  minIntervalMs?: number;
+  /** Max retries for 429/rate-limit at the same offset. Defaults to 5. */
+  rateLimitRetries?: number;
+  /** Base delay for rate-limit retries. Defaults to 65000 ms. */
+  rateLimitDelayMs?: number;
 }
 
 function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
@@ -127,11 +145,28 @@ export async function collectQuery(
 ): Promise<void> {
   const maxTransient = options.transientRetries ?? 3;
   const baseDelay = options.retryDelayMs ?? 2000;
+  const minInterval = options.minIntervalMs ?? MIN_CHUNK_INTERVAL_MS;
+  const maxRateLimit = options.rateLimitRetries ?? 5;
+  const rateLimitDelay = options.rateLimitDelayMs ?? RATE_LIMIT_DELAY_MS;
   let offset = 0;
   let limit = 9000;
   let iteration = 1;
   let transientAttempts = 0;
+  let rateLimitAttempts = 0;
+  let firstRequest = true;
   while (!stopped()) {
+    // Pacing: jangan tembak query berikutnya seketika. 30 query/menit =
+    // minimal ~2 dtk antar query; default 2,5 dtk memberi margin aman.
+    // Dikecualikan untuk request pertama agar single-row run tetap responsif.
+    if (!firstRequest && minInterval > 0) {
+      try {
+        await sleepAbortable(minInterval, signal);
+      } catch {
+        throw new Error("Run dihentikan oleh pengguna.");
+      }
+      if (stopped()) break;
+    }
+    firstRequest = false;
     let response: SqlChunkResponse;
     try {
       const pending = request(offset, limit, iteration);
@@ -155,6 +190,16 @@ export async function collectQuery(
     }
     if (!response.ok) {
       if (stopped()) break;
+      // 429 Too Many Requests (30 per 1 minute): tunggu satu jendela penuh
+      // lalu ulangi offset yang sama — jangan gagalkan batch.
+      if (RATE_LIMIT_ERROR.test(response.message) && rateLimitAttempts < maxRateLimit) {
+        rateLimitAttempts++;
+        transientAttempts = 0;
+        const waitSec = Math.round((rateLimitDelay * rateLimitAttempts) / 1000);
+        report(`Kena batas DB (30 query/menit). Jeda ${waitSec} dtk lalu lanjut otomatis dari baris ${offset + 1} (percobaan ${rateLimitAttempts}/${maxRateLimit}). Jangan Stop/tab lain…`);
+        await sleepAbortable(rateLimitDelay * rateLimitAttempts, signal);
+        continue;
+      }
       if (TRANSIENT_RUN_ERROR.test(response.message) && transientAttempts < maxTransient) {
         transientAttempts++;
         report(`Koneksi ke SQL Lab terputus sesaat. Mencoba ulang ${transientAttempts}/${maxTransient} dari baris ${offset + 1}…`);
@@ -172,6 +217,7 @@ export async function collectQuery(
     if (response.rows.length || offset === 0) await accept(response.columns, response.rows);
     offset += response.rows.length;
     transientAttempts = 0;
+    rateLimitAttempts = 0;
     if (stopped()) break;
     if (!response.hasMore) return;
     if (!response.rows.length) throw new Error("Chunk kosong tetapi hasil belum selesai; proses dihentikan agar tidak mengulang tanpa akhir.");

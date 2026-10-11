@@ -3,7 +3,7 @@ import { ChunkedExport, collectQuery } from "../services/chunked-export";
 import { applyWilayahConfig, extractSqlTitle } from "../services/sql";
 import { loadSnapshot, loadWilayah, saveSnapshot, saveWilayah } from "../services/storage";
 import { groupSqlFiles, isSqlPath } from "../services/repository-sync/files";
-import { addWilayahCode, targetWilayahTargets, validateWilayah } from "../services/wilayah";
+import { addWilayahCode, describeRegencyExpansion, targetWilayahTargets, validateWilayah } from "../services/wilayah";
 import { TARGET, type ExtensionMessage, type RepositorySnapshot, type ScanResult, type SqlFile, type SqlRunProgress, type SqlChunkResponse, type SyncProgress, type WilayahConfig } from "../types";
 
 let snapshot: RepositorySnapshot | null = null;
@@ -14,6 +14,7 @@ let folderRunning = false;
 const runProgressTargets = new Map<string, (progress: SqlRunProgress) => void>();
 const selectedPaths = new Set<string>();
 let combineSelected = false;
+let combinePerFolder = false;
 let selectionRunning = false;
 let selectionRunId: string | null = null;
 let selectionTabId: number | null = null;
@@ -92,7 +93,8 @@ app.innerHTML = `
           <ul>
             <li>Tombol <strong>Run</strong> berubah menjadi <strong>Stop</strong> selama query berjalan.</li>
             <li>Editor SQL aktif akan diganti. Side panel harus tetap terbuka; tab SQL Lab boleh tidak terlihat, tapi jangan ditutup atau dipakai menjalankan query lain.</li>
-            <li><strong>Stop</strong> atau error tetap mengunduh hasil yang sudah terkumpul sebagai Excel parsial.</li>
+            <li>QueryFlow memberi jeda ±2,5 dtk antar query/chunk, ±3 dtk antar file, ±5 dtk antar wilayah agar di bawah batas DB <strong>30 query/menit</strong>. Kena 429 ditunggu otomatis ±65 dtk lalu dilanjut dari baris yang sama (maks 5x).</li>
+            <li><strong>Stop</strong> atau error tetap mengunduh hasil yang sudah terkumpul sebagai Excel parsial; nama file yang sudah selesai ikut ditampilkan agar sisa file mudah diseleksi ulang via checkbox → Run Terpilih.</li>
           </ul>
         </div>
       </details>
@@ -102,6 +104,10 @@ app.innerHTML = `
         <label class="checkbox-row selection-combine">
           <input id="combine-selected" type="checkbox" />
           <span>Gabung 1 Excel</span>
+        </label>
+        <label id="combine-per-folder-row" class="checkbox-row selection-combine sub-option">
+          <input id="combine-per-folder" type="checkbox" />
+          <span>Gabung 1 Excel per folder</span>
         </label>
         <div class="selection-actions">
           <button id="run-selected" class="secondary-button" type="button">▶ Run Terpilih → Excel</button>
@@ -171,15 +177,31 @@ function renderWilayah(): void {
   byId("wilayah-error").textContent = wilayahError;
   byId<HTMLInputElement>("split-level1").checked = wilayah.splitLevel1 !== false;
   byId<HTMLInputElement>("split-level2").checked = wilayah.splitLevel2 !== false;
-  byId("wilayah-mode").textContent = wilayah.level2.length > 0
-    ? (wilayah.splitLevel2 !== false
-        ? "Filter aktif: loop sekuensial per kabupaten/kota (1 file Excel per kabupaten/kota)."
-        : "Filter aktif: seluruh kabupaten/kota terpilih digabung dalam 1 file Excel. Daftar provinsi diabaikan selama Level 2 terisi.")
-    : wilayah.level1.length > 0
-      ? (wilayah.splitLevel1 !== false
-          ? "Filter aktif: loop sekuensial per provinsi (1 file Excel per provinsi)."
-          : "Filter aktif: seluruh provinsi terpilih digabung dalam 1 file Excel.")
-      : "Filter wilayah kosong: semua wilayah akan dijalankan.";
+  byId("wilayah-mode").textContent = wilayahModeText(wilayah);
+}
+
+function wilayahModeText(config: WilayahConfig): string {
+  if (config.level2.length > 0) {
+    return config.splitLevel2 !== false
+      ? `Filter aktif: loop sekuensial per kabupaten/kota (${config.level2.length} kode, 1 file Excel per kabupaten/kota).`
+      : "Filter aktif: seluruh kabupaten/kota terpilih digabung dalam 1 file Excel. Daftar provinsi diabaikan selama Level 2 terisi.";
+  }
+  if (config.level1.length > 0) {
+    if (config.splitLevel2 !== false) {
+      const { regencies, unknownProvinces } = describeRegencyExpansion(config);
+      const knownProvinces = config.level1.length - unknownProvinces.length;
+      const base = `Filter aktif: loop sekuensial per kabupaten/kota — ${regencies.length} kab/kota dari ${knownProvinces} provinsi (otomatis dari Level 1, 1 file Excel per kabupaten/kota).`;
+      return unknownProvinces.length > 0
+        ? `${base} Kode ${unknownProvinces.join(", ")} tidak dikenal dan dijalankan per provinsi.`
+        : base;
+    }
+    return config.splitLevel1 !== false
+      ? "Filter aktif: loop sekuensial per provinsi (1 file Excel per provinsi)."
+      : "Filter aktif: seluruh provinsi terpilih digabung dalam 1 file Excel.";
+  }
+  return config.splitLevel1 !== false || config.splitLevel2 !== false
+    ? "Filter wilayah kosong: semua wilayah dijalankan dalam 1 file Excel (split tidak berlaku tanpa filter). Isi Level 1 (provinsi) untuk memisahkan otomatis per kabupaten/kota, atau Level 2 untuk kode tertentu."
+    : "Filter wilayah kosong: semua wilayah akan dijalankan.";
 }
 
 function renderCodeList(
@@ -233,6 +255,26 @@ function selectionExportBase(files: SqlFile[]): string {
   return `${folder}/seleksi_${files.length}file_${stamp}`;
 }
 
+function folderOf(path: string): string {
+  return path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "root";
+}
+
+function folderExportBase(folderPath: string, count: number, stamp: string): string {
+  return `${folderPath}/gabungan_${count}file_${stamp}`;
+}
+
+/** Kelompokkan file terpilih per folder, urutan mengikuti snapshot (stabil antar run). */
+export function groupSelectedByFolder(files: SqlFile[]): { folder: string; files: SqlFile[] }[] {
+  const buckets = new Map<string, SqlFile[]>();
+  for (const file of files) {
+    const folder = folderOf(file.path);
+    const bucket = buckets.get(folder) ?? [];
+    bucket.push(file);
+    buckets.set(folder, bucket);
+  }
+  return [...buckets.entries()].map(([folder, groupFiles]) => ({ folder, files: groupFiles }));
+}
+
 function updateSelectionBar(): void {
   const bar = byId("selection-bar");
   const count = byId("selection-count");
@@ -242,6 +284,9 @@ function updateSelectionBar(): void {
   // Keep Stop clickable while the selection run itself is active.
   runButton.disabled = (folderRunning && !selectionRunning) || selectedPaths.size === 0;
   byId<HTMLInputElement>("combine-selected").checked = combineSelected;
+  const perFolderInput = byId<HTMLInputElement>("combine-per-folder");
+  perFolderInput.checked = combinePerFolder && combineSelected;
+  perFolderInput.disabled = !combineSelected || folderRunning;
 }
 
 interface QueueFileHooks {
@@ -361,6 +406,7 @@ function renderGroups(): void {
         void stopRun(batchRunId, batchTabId);
         return;
       }
+      if (!confirmEmptySplitRun() || !confirmRegencyExpansion()) return;
       folderRunning = true;
       batchStopRequested = false;
       batchController = new AbortController();
@@ -369,12 +415,17 @@ function renderGroups(): void {
       const targets = targetWilayahTargets(wilayah);
       let currentOutput: ChunkedExport | null = null;
       let currentPrefix = "";
+      const completedFiles: string[] = [];
       try {
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
         batchTabId = tab.id;
         for (const [targetIndex, wilayahTarget] of targets.entries()) {
           if (batchStopRequested) throw new Error("Run Folder dihentikan oleh pengguna.");
+          if (targetIndex > 0) {
+            const continued = await sleepPaced(TARGET_GAP_MS, batchController.signal, () => batchStopRequested, (message) => { batchStatus.textContent = `${currentPrefix}${message}`; }, currentPrefix);
+            if (!continued) throw new Error("Run Folder dihentikan oleh pengguna.");
+          }
           const activeConfig: WilayahConfig = wilayahTarget.config;
           const exportPath = wilayahTarget.code ? `${group.path}_${wilayahTarget.code}` : group.path;
           const output = new ChunkedExport(exportPath);
@@ -383,6 +434,10 @@ function renderGroups(): void {
           currentPrefix = provPrefix;
           for (const [index, file] of group.files.entries()) {
             if (batchStopRequested) throw new Error("Run Folder dihentikan oleh pengguna.");
+            if (index > 0) {
+              const continued = await sleepPaced(FILE_GAP_MS, batchController.signal, () => batchStopRequested, (message) => { batchStatus.textContent = `${provPrefix}File ${index + 1}/${group.files.length}: ${file.name} — ${message}`; }, "");
+              if (!continued) throw new Error("Run Folder dihentikan oleh pengguna.");
+            }
             batchStatus.textContent = `${provPrefix}File ${index + 1}/${group.files.length}: ${file.name} — menunggu hasil. Tetap buka panel dan tab query ini.`;
             await runOneFile(file, activeConfig, output, {
               tabId: tab.id!,
@@ -400,6 +455,7 @@ function renderGroups(): void {
                 // Keep the Stop action available between files and while exporting.
               },
             });
+            completedFiles.push(`${provPrefix}${file.name}`);
           }
           batchStatus.textContent = `${provPrefix}Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
           await output.flush(true);
@@ -409,7 +465,7 @@ function renderGroups(): void {
           : `Selesai: ${currentOutput?.totalRows.toLocaleString("id-ID") ?? 0} baris · ${currentOutput?.parts ?? 0} file Excel diunduh.`;
       } catch (error) {
         batchStatus.textContent = currentOutput
-          ? `${currentPrefix}${await finishPartial(currentOutput, error)}`
+          ? `${currentPrefix}${await finishPartial(currentOutput, error)}${describeCompleted(completedFiles)}`
           : (error instanceof Error ? error.message : "Run Folder gagal.");
       } finally {
         folderRunning = false;
@@ -481,6 +537,7 @@ function renderGroups(): void {
           return;
         }
         if (folderRunning) { status.textContent = "Tunggu Run Folder selesai."; return; }
+        if (!confirmEmptySplitRun() || !confirmRegencyExpansion()) return;
         folderRunning = true;
         stopRequested = false;
         controller = new AbortController();
@@ -495,6 +552,10 @@ function renderGroups(): void {
           run.classList.add("stop-button");
           for (const [targetIndex, wilayahTarget] of targets.entries()) {
             if (stopRequested) throw new Error("Run dihentikan oleh pengguna.");
+            if (targetIndex > 0) {
+              const continued = await sleepPaced(TARGET_GAP_MS, controller.signal, () => stopRequested, (message) => { status.textContent = `${currentPrefix}${message}`; }, currentPrefix);
+              if (!continued) throw new Error("Run dihentikan oleh pengguna.");
+            }
             const activeConfig: WilayahConfig = wilayahTarget.config;
             const exportPath = wilayahTarget.code ? `${basePath}_${wilayahTarget.code}` : basePath;
             const output = new ChunkedExport(exportPath);
@@ -546,6 +607,37 @@ function renderGroups(): void {
   updateSelectionBar();
 }
 
+/**
+ * Confirms before a run that cannot honor the split options: with both filters
+ * empty the app cannot infer the user's province access scope, so the result is
+ * a single combined workbook. Returns false when the user cancels.
+ */
+function confirmEmptySplitRun(): boolean {
+  const splitOn = wilayah.splitLevel1 !== false || wilayah.splitLevel2 !== false;
+  if (wilayah.level1.length === 0 && wilayah.level2.length === 0 && splitOn) {
+    return confirm(
+      "Filter wilayah kosong, sedangkan opsi pisah file Excel aktif.\n\nQueryFlow tidak dapat membaca hak akses provinsi Anda — hasil run ini hanya 1 file Excel gabungan.\n\nIsi minimal Level 1 (provinsi) untuk memisahkan file per wilayah.\n\nLanjutkan run gabungan?",
+    );
+  }
+  return true;
+}
+
+/**
+ * Confirms before a run that auto-expands provinces into a regency loop: with an
+ * empty Level 2 the app cannot know the user's access scope, so it states how
+ * many regencies will run and offers filling Level 2 first. Returns false on cancel.
+ */
+function confirmRegencyExpansion(): boolean {
+  if (wilayah.level2.length > 0 || wilayah.splitLevel2 === false) return true;
+  const { regencies } = describeRegencyExpansion(wilayah);
+  if (regencies.length === 0) return true;
+  const provs = wilayah.level1.map((code) => code.trim()).filter(Boolean);
+  const provLabel = provs.length > 1 ? `${provs.length} provinsi (${provs.join(", ")})` : `provinsi ${provs[0] ?? ""}`;
+  return confirm(
+    `Filter kabupaten/kota kosong — run ini akan loop ${regencies.length} kabupaten/kota dari ${provLabel} (${regencies.length} query berurutan, 1 file Excel per kabupaten/kota).\n\nJika hak akses Anda kurang dari itu atau hanya ingin menjalankan beberapa kab/kota, isi filter Level 2 terlebih dahulu.\n\nLanjutkan?`,
+  );
+}
+
 async function runSelected(): Promise<void> {
   const statusEl = byId("selection-status");
   const runButton = byId<HTMLButtonElement>("run-selected");
@@ -566,6 +658,7 @@ async function runSelected(): Promise<void> {
     statusEl.textContent = "Pilih minimal 1 file lintas folder untuk dijalankan.";
     return;
   }
+  if (!confirmEmptySplitRun() || !confirmRegencyExpansion()) return;
   folderRunning = true;
   selectionRunning = true;
   updateSelectionBar();
@@ -574,9 +667,15 @@ async function runSelected(): Promise<void> {
   runButton.textContent = "■ Stop";
   const targets = targetWilayahTargets(wilayah);
   const combine = combineSelected;
+  const perFolder = combine && combinePerFolder;
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+  const folderBuckets = perFolder ? groupSelectedByFolder(files) : [];
   let currentOutput: ChunkedExport | null = null;
   let currentPrefix = "";
   let doneFiles = 0;
+  const doneNames: string[] = [];
+  const paceSelection = (message: (text: string) => void, gapMs = FILE_GAP_MS): Promise<boolean> =>
+    sleepPaced(gapMs, selectionController.signal, () => selectionStopRequested, message, "");
   try {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
@@ -584,7 +683,46 @@ async function runSelected(): Promise<void> {
     for (const [targetIndex, wilayahTarget] of targets.entries()) {
       if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
       const targetPrefix = wilayahTarget.code ? `${wilayahTarget.label} [${targetIndex + 1}/${targets.length}] - ` : "";
-      if (combine) {
+      if (targetIndex > 0) {
+        const continued = await paceSelection((message) => { statusEl.textContent = `${targetPrefix}${message}`; }, TARGET_GAP_MS);
+        if (!continued) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+      }
+      if (perFolder) {
+        for (const [bucketIndex, bucket] of folderBuckets.entries()) {
+          if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+          const base = folderExportBase(bucket.folder, bucket.files.length, stamp);
+          const exportPath = wilayahTarget.code ? `${base}_${wilayahTarget.code}` : base;
+          const output = new ChunkedExport(exportPath);
+          currentOutput = output;
+          currentPrefix = targetPrefix;
+          const folderLabel = `${bucket.folder} [${bucketIndex + 1}/${folderBuckets.length}]`;
+          for (const [index, file] of bucket.files.entries()) {
+            if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+            if (index > 0 || bucketIndex > 0 || targetIndex > 0) {
+              const continued = await paceSelection((message) => { statusEl.textContent = `${targetPrefix}${folderLabel} File ${index + 1}/${bucket.files.length}: ${file.name} — ${message}`; });
+              if (!continued) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+            }
+            statusEl.textContent = `${targetPrefix}${folderLabel} File ${index + 1}/${bucket.files.length}: ${file.path} — menunggu hasil. Tetap buka panel dan tab query ini.`;
+            await runOneFile(file, wilayahTarget.config, output, {
+              tabId: tab.id!,
+              signal: selectionController.signal,
+              isStopped: () => selectionStopRequested,
+              report: (message) => { statusEl.textContent = `${targetPrefix}${folderLabel} File ${index + 1}/${bucket.files.length}: ${file.name} — ${message}`; },
+              trackRun: (runId) => {
+                selectionRunId = runId;
+                runProgressTargets.set(runId, (runProgress) => {
+                  statusEl.textContent = `${targetPrefix}${folderLabel} File ${index + 1}/${bucket.files.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
+                });
+              },
+              untrackRun: (runId) => { runProgressTargets.delete(runId); },
+            });
+            doneFiles++;
+            doneNames.push(`${targetPrefix}${file.path}`);
+          }
+          statusEl.textContent = `${targetPrefix}${folderLabel}: Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul…`;
+          await output.flush(true);
+        }
+      } else if (combine) {
         const exportPath = wilayahTarget.code
           ? `${selectionExportBase(files)}_${wilayahTarget.code}`
           : selectionExportBase(files);
@@ -593,6 +731,10 @@ async function runSelected(): Promise<void> {
         currentPrefix = targetPrefix;
         for (const [index, file] of files.entries()) {
           if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+          if (index > 0 || targetIndex > 0) {
+            const continued = await paceSelection((message) => { statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${message}`; });
+            if (!continued) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+          }
           statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.path} — menunggu hasil. Tetap buka panel dan tab query ini.`;
           await runOneFile(file, wilayahTarget.config, output, {
             tabId: tab.id!,
@@ -608,12 +750,17 @@ async function runSelected(): Promise<void> {
             untrackRun: (runId) => { runProgressTargets.delete(runId); },
           });
           doneFiles++;
+          doneNames.push(`${targetPrefix}${file.path}`);
         }
         statusEl.textContent = `${targetPrefix}Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
         await output.flush(true);
       } else {
         for (const [index, file] of files.entries()) {
           if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+          if (index > 0 || targetIndex > 0) {
+            const continued = await paceSelection((message) => { statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${message}`; });
+            if (!continued) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+          }
           const basePath = file.path.replace(/\.sql$/i, "");
           const exportPath = wilayahTarget.code ? `${basePath}_${wilayahTarget.code}` : basePath;
           const output = new ChunkedExport(exportPath);
@@ -633,6 +780,7 @@ async function runSelected(): Promise<void> {
             untrackRun: (runId) => { runProgressTargets.delete(runId); },
           });
           doneFiles++;
+          doneNames.push(`${targetPrefix}${file.path}`);
           statusEl.textContent = `${targetPrefix}Menulis Excel akhir (${file.name}): ${output.totalRows.toLocaleString("id-ID")} baris terkumpul…`;
           await output.flush(true);
         }
@@ -644,7 +792,7 @@ async function runSelected(): Promise<void> {
       : `Selesai: ${doneFiles} file berhasil diproses · ${currentOutput?.totalRows.toLocaleString("id-ID") ?? 0} baris · ${currentOutput?.parts ?? 0} file Excel diunduh.`;
   } catch (error) {
     statusEl.textContent = currentOutput
-      ? `${currentPrefix}${await finishPartial(currentOutput, error)}`
+      ? `${currentPrefix}${await finishPartial(currentOutput, error)}${describeCompleted(doneNames)}`
       : (error instanceof Error ? error.message : "Run Terpilih gagal.");
   } finally {
     folderRunning = false;
@@ -715,6 +863,32 @@ function formatDate(value: string): string {
 
 function createRunId(): string {
   return crypto.randomUUID();
+}
+
+/**
+ * Workaround 429 Too Many Requests (30 per 1 minute): beri jeda antar
+ * file/target agar laju query tetap di bawah limit, plus jeda antar chunk
+ * sudah ditangani di collectQuery. Abortable agar Stop tetap responsif.
+ */
+const FILE_GAP_MS = 3000;
+const TARGET_GAP_MS = 5000;
+
+function sleepPaced(ms: number, signal: AbortSignal, isStopped: () => boolean, report: (message: string) => void, label: string): Promise<boolean> {
+  if (ms <= 0 || isStopped()) return Promise.resolve(!isStopped());
+  report(`${label} Jeda ${Math.round(ms / 1000)} dtk agar tidak kena batas 30 query/menit…`);
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => { cleanup(); resolve(!isStopped()); }, ms);
+    const onAbort = (): void => { cleanup(); resolve(false); };
+    const cleanup = (): void => { window.clearTimeout(timer); signal.removeEventListener("abort", onAbort); };
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function describeCompleted(completed: string[]): string {
+  return completed.length > 0
+    ? ` File selesai sebelum gagal (${completed.length}): ${completed.slice(-10).join(", ")}${completed.length > 10 ? ", …" : ""}. Untuk lanjutkan, seleksi sisa file via checkbox lalu Run Terpilih.`
+    : "";
 }
 
 function formatRunProgress(progress: SqlRunProgress): string {
@@ -880,6 +1054,13 @@ byId("clear-selected").addEventListener("click", () => {
 });
 byId<HTMLInputElement>("combine-selected").addEventListener("change", (event) => {
   combineSelected = (event.target as HTMLInputElement).checked;
+  if (!combineSelected) combinePerFolder = false;
+  updateSelectionBar();
+});
+byId<HTMLInputElement>("combine-per-folder").addEventListener("change", (event) => {
+  combinePerFolder = (event.target as HTMLInputElement).checked;
+  if (combinePerFolder) combineSelected = true;
+  updateSelectionBar();
 });
 
 void initialize();

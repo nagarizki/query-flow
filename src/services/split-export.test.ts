@@ -1,0 +1,90 @@
+import { describe, expect, it, vi } from "vitest";
+import { resolveSplitColumnIndex, SplitAfterExport, validateSplitColumnInput } from "./split-export";
+import type { QueryResult } from "./excel";
+
+const result = (filename: string, columns: string[], rows: unknown[][]): QueryResult => ({ filename, title: filename, columns, rows });
+const serialize = async (results: QueryResult[]): Promise<Uint8Array> => new TextEncoder().encode(JSON.stringify(results));
+
+function setup() {
+  const saved: { path: string; results: QueryResult[] }[] = [];
+  const download = vi.fn(async (path: string, buffer: Uint8Array) => {
+    saved.push({ path, results: JSON.parse(new TextDecoder().decode(buffer)) as QueryResult[] });
+  });
+  const output = new SplitAfterExport("20261014_1432_DBNAS", "kode_kab", { serialize, download });
+  return { output, saved, download };
+}
+
+describe("split column resolution", () => {
+  it("matches headers case-insensitively and trims whitespace", () => {
+    expect(resolveSplitColumnIndex([" KODE_KAB ", "nilai"], "kode_kab", "a.sql")).toBe(0);
+    expect(resolveSplitColumnIndex(["kab", "nilai"], " KAB ", "a.sql")).toBe(0);
+  });
+
+  it("fails when the header is absent or ambiguous", () => {
+    expect(() => resolveSplitColumnIndex(["kab", "nilai"], "kategori", "c.sql"))
+      .toThrow(/kategori.*c\.sql.*kab, nilai/i);
+    expect(() => resolveSplitColumnIndex(["kab", " KAB "], "kab", "c.sql"))
+      .toThrow(/ambigu.*c\.sql/i);
+  });
+
+  it("rejects an empty column input", () => {
+    expect(validateSplitColumnInput("   ")).toMatch(/kolom/i);
+    expect(validateSplitColumnInput("kode_kab")).toBeNull();
+  });
+
+  it("rejects an empty column in the constructor", () => {
+    expect(() => new SplitAfterExport("base", "  ", { serialize })).toThrow(/kolom/i);
+  });
+});
+
+describe("split-after export", () => {
+  it("groups by column value across pages and SQL files", async () => {
+    const { output, saved } = setup();
+    await output.append(result("q1.sql", ["kode_kab", "nilai"], [["3507", 1], ["9708", 2]]));
+    await output.append(result("q1.sql", ["KODE_KAB", "nilai"], [["3507", 3]]));
+    await output.append(result("q2.sql", ["kode_kab", "nilai"], [["3507", 4]]));
+    expect(output.totalRows).toBe(4);
+    expect(output.groupCount).toBe(2);
+    await output.flush(true);
+    expect(saved).toHaveLength(2);
+    const group3507 = saved.find((entry) => entry.path.includes("3507"));
+    expect(group3507?.results).toEqual([
+      result("q1.sql", ["kode_kab", "nilai"], [["3507", 1], ["3507", 3]]),
+      result("q2.sql", ["kode_kab", "nilai"], [["3507", 4]]),
+    ]);
+  });
+
+  it("keeps null and blank values in the same explicit group", async () => {
+    const { output, saved } = setup();
+    await output.append(result("q.sql", ["kode_kab", "nilai"], [[null, 1], ["  ", 2]]));
+    await output.flush(true);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.path).toContain("blank");
+    expect(saved[0]?.results[0]?.rows).toHaveLength(2);
+  });
+
+  it("fails fast when a later file lacks the split column, keeping prior groups partial", async () => {
+    const { output, saved } = setup();
+    await output.append(result("q1.sql", ["kode_kab", "nilai"], [["3507", 1]]));
+    expect(() => output.validateHeaders("q3.sql", ["kode_kab", "lain"])).not.toThrow();
+    await expect(output.append(result("q3.sql", ["kab", "nilai"], [["3507", 2]]))).rejects.toThrow(/q3\.sql/);
+    await output.flush(true, true);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.path).toMatch(/_partial$/);
+  });
+
+  it("rejects changing headers during pagination of the same file", async () => {
+    const { output } = setup();
+    await output.append(result("q1.sql", ["kode_kab", "nilai"], [["3507", 1]]));
+    await expect(output.append(result("q1.sql", ["kode_kab", "other"], [["3507", 2]]))).rejects.toThrow(/berubah.*q1\.sql/i);
+  });
+
+  it("gives each group stable collision-free paths", async () => {
+    const { output, saved } = setup();
+    await output.append(result("q.sql", ["kode_kab", "nilai"], [["A ", 1], ["a", 2]]));
+    await output.flush(true);
+    expect(saved).toHaveLength(2);
+    expect(saved[0]?.path).not.toBe(saved[1]?.path);
+    expect(saved.every((entry) => entry.path.startsWith("20261014_1432_DBNAS_"))).toBe(true);
+  });
+});

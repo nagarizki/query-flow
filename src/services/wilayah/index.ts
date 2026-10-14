@@ -108,6 +108,19 @@ export function describeRegencyExpansion(config: WilayahConfig): RegencyExpansio
   return expandProvincesToRegencies(config.level1);
 }
 
+/**
+ * Single combined config for hemat-request runs: one query carries all
+ * selected provinces (pipe-joined by applyWilayahConfig) instead of looping
+ * per region. Level 2 passes through untouched; empty filters pass through.
+ */
+export function combinedWilayahConfig(config: WilayahConfig): WilayahConfig {
+  const level1 = config.level1.map((code) => code.trim()).filter(Boolean);
+  if (config.level2.length === 0 && level1.length > 0) {
+    return { level1, level2: [], splitLevel1: config.splitLevel1, splitLevel2: config.splitLevel2 };
+  }
+  return { ...config, level1, level2: config.level2.map((code) => code.trim()).filter(Boolean) };
+}
+
 export function targetWilayahTargets(config: WilayahConfig): WilayahTarget[] {
   const regencies = targetRegencyCodes(config);
   if (config.level2.length > 0 && !(regencies.length === 1 && regencies[0] === null)) {

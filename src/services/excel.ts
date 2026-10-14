@@ -140,6 +140,54 @@ const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 const RELS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
 
+export interface ExportBasenameOptions {
+  /** Local browser time, captured once per Run click so all files share one stamp. */
+  runAt: Date;
+  /** Folder path (e.g. group.path) or single-file base path without extension. */
+  folder: string;
+  /** Table title/basename; only for single-file runs. Omitted for folder runs. */
+  table?: string;
+  /** Region code as-is (2-4 digits); null/empty renders as NAS. */
+  wilayah?: string | null;
+}
+
+/** YYYYMMDD_HHMM stamp in local browser time (not UTC); document this in README. */
+export function formatRunStamp(runAt: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${runAt.getFullYear()}${pad(runAt.getMonth() + 1)}${pad(runAt.getDate())}_${pad(runAt.getHours())}${pad(runAt.getMinutes())}`;
+}
+
+function sanitizeBasenameSegment(value: string, maxLength: number): string {
+  return value
+    .replace(/\.sql$/i, "")
+    .replace(/[^a-z0-9_-]/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, maxLength);
+}
+
+/**
+ * Stamped folder/table base without wilayah segment or extension:
+ * YYYYMMDD_HHMM_FOLDER[_TABEL]. SplitAfterExport appends _slug_hash per
+ * group; buildExportBasename appends the wilayah segment.
+ */
+export function buildSplitBase(runAt: Date, folder: string, table?: string): string {
+  const cleanFolder = sanitizeBasenameSegment(folder.replace(/^\/+|\/+$/g, ""), 120) || "Query";
+  const parts = [formatRunStamp(runAt), cleanFolder];
+  const cleanTable = table !== undefined ? sanitizeBasenameSegment(table, 40) : "";
+  if (cleanTable) parts.push(cleanTable);
+  return parts.join("_");
+}
+
+/**
+ * YYYYMMDD_HHMM_FOLDER[_TABEL]_WILAYAH without extension or _part/_partial
+ * suffixes (those stay appended last by ChunkedExport.drain so lexical sort
+ * stays chronological). Single-file runs pass table; folder runs omit it.
+ */
+export function buildExportBasename(options: ExportBasenameOptions): string {
+  const wilayah = options.wilayah ? sanitizeBasenameSegment(options.wilayah, 40) : "";
+  return `${buildSplitBase(options.runAt, options.folder, options.table)}_${wilayah || "NAS"}`;
+}
+
 export function workbookFilename(path: string): string {
   const folder = path.replace(/\.sql$/i, "").replace(/^\/+|\/+$/g, "") || "Query";
   return `${folder.replace(/[^a-z0-9_-]/gi, "_")}.xlsx`;

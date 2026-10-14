@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import ExcelJS from "exceljs";
-import { bigNumberPartsToDecimal, buildWorkbook, sheetName, exportFolder, normalizeCellValue, serializeWorkbook } from "./excel";
+import { bigNumberPartsToDecimal, buildExportBasename, buildWorkbook, sheetName, exportFolder, normalizeCellValue, serializeWorkbook } from "./excel";
 
 it("uses the SQL title directly as the sheet name", () => {
   expect(sheetName("Agregat_1a.sql", [], "Jumlah Usaha")).toBe("Jumlah Usaha");
@@ -58,6 +58,21 @@ it("converts serialized high-precision numbers instead of writing JSON", () => {
 
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+it("builds stamped basenames with table only for single-file runs", () => {
+  const runAt = new Date(2026, 9, 14, 14, 32);
+  expect(buildExportBasename({ runAt, folder: "DBNAS", table: "JumlahPerFlag", wilayah: "9708" }))
+    .toBe("20261014_1432_DBNAS_JumlahPerFlag_9708");
+  expect(buildExportBasename({ runAt, folder: "DBNAS", wilayah: "9708" }))
+    .toBe("20261014_1432_DBNAS_9708");
+  expect(buildExportBasename({ runAt, folder: "Agregat/Kategori_A", wilayah: null }))
+    .toBe("20261014_1432_Agregat_Kategori_A_NAS");
+  expect(buildExportBasename({ runAt, folder: "DBNAS", table: "A/B: C?", wilayah: "" }))
+    .toBe("20261014_1432_DBNAS_A_B__C_NAS");
+  const longTable = "T".repeat(100);
+  expect(buildExportBasename({ runAt, folder: "DBNAS", table: longTable, wilayah: "35" }).split("_")[3])
+    .toHaveLength(40);
+});
 
 it("uses Chrome downloads for automatic parts and reports download rejection", async () => {
   const download = vi.fn().mockResolvedValueOnce(123).mockRejectedValueOnce(new Error("Download rejected"));

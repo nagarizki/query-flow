@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addWilayahCode, describeRegencyExpansion, expandProvincesToRegencies, normalizeWilayah, targetProvinceCodes, targetRegencyCodes, targetWilayahTargets, validateWilayah } from ".";
+import { addWilayahCode, combinedWilayahConfig, describeRegencyExpansion, expandProvincesToRegencies, normalizeWilayah, targetProvinceCodes, targetRegencyCodes, targetWilayahTargets, validateWilayah } from ".";
 import { provinceName, regenciesOfProvince } from "./regions";
 
 describe("wilayah validation", () => {
@@ -111,5 +111,16 @@ describe("wilayah validation", () => {
     expect(targets).toHaveLength(1);
     expect(targets[0]?.code).toBeNull();
     expect(targets[0]?.kind).toBe("all");
+  });
+
+  it("combines provinces into one query for hemat-request runs", () => {
+    expect(combinedWilayahConfig({ level1: ["35", "32"], level2: [] }))
+      .toEqual({ level1: ["35", "32"], level2: [], splitLevel1: undefined, splitLevel2: undefined });
+    expect(combinedWilayahConfig({ level1: [" 35 "], level2: [], splitLevel1: false, splitLevel2: true }))
+      .toEqual({ level1: ["35"], level2: [], splitLevel1: false, splitLevel2: true });
+    expect(combinedWilayahConfig({ level1: ["35"], level2: ["3507"] }))
+      .toEqual({ level1: ["35"], level2: ["3507"], splitLevel1: undefined, splitLevel2: undefined });
+    expect(combinedWilayahConfig({ level1: [], level2: [] }))
+      .toEqual({ level1: [], level2: [], splitLevel1: undefined, splitLevel2: undefined });
   });
 });

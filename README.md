@@ -158,8 +158,15 @@ Ukuran awal chunk adalah 9.000 baris dan otomatis mengecil jika batas ukuran ter
 
 Semua tabel dalam satu folder digabung menjadi satu workbook, misalnya `Agregat/Kategori_A` → `Agregat_Kategori_A.xlsx`. Hanya jika ukuran XLSX akhir melebihi 20 MiB (20 × 1024 × 1024 byte), hasil dipecah menjadi `_part-001.xlsx`, `_part-002.xlsx`, dan seterusnya. Run satu SQL juga mengekspor Excel. Cukup sekali klik Run; chunk berikutnya dijalankan otomatis.
 
+### Hemat request (aktif per folder)
+
+Setiap folder punya checkbox **Hemat request: 1 query lalu pisah per kab/kota** (default aktif) plus kolom pembagi (default `kode_kabupaten`). Saat aktif, satu folder dijalankan sebagai **1 query gabungan per SQL** (`filter_provinsi='35|32'`), lalu hasilnya dipisah di extension menjadi 1 file Excel per nilai kolom — tanpa ZIP. Contoh: Jatim (38 kab/kota) × 4 SQL = ±152 run loop menjadi 4 run hemat.
+
+Syarat (karena default aktif): **kolom pembagi wajib ada di semua SQL terpilih** dengan nama yang sama (pencocokan abaikan huruf besar/kecil dan spasi). Jika satu SQL tidak punya kolom itu, batch gagal cepat dengan pesan nama file + header tersedia; matikan hemat untuk folder itu atau perbaiki SQL. Nilai `NULL`/kosong masuk grup `(blank)`. Mode gabung (**Gabung 1 Excel**) tetap memakai loop per wilayah.
+
 ## Excel Output
 
+- Nama file mengikuti pola `YYYYMMDD_HHMM_Folder[_Tabel]_Wilayah`: Run Folder `DBNAS` per kab `9708` → `20261014_1432_DBNAS_9708.xlsx`; Run 1 file bertabel `JumlahPerFlag` → `20261014_1432_DBNAS_JumlahPerFlag_9708.xlsx`. Stamp memakai **waktu lokal browser** saat Run diklik (sama untuk semua file dalam satu run) sehingga sort nama = urutan kronologis. Tanpa filter wilayah `NAS` dipakai sebagai segmen wilayah. Hasil besar pecah `_part-001`, gagal/Stop tambah `_partial` — selalu paling belakang.
 - Workbook mengikuti path folder tanpa awalan `Hasil_`: `Agregat/Kategori_A` → `Agregat_Kategori_A.xlsx`. Pemisah folder dan karakter khusus diganti underscore sehingga folder Agregat dan Mikro dapat dibedakan.
 - Satu hasil SQL menjadi satu sheet, mengikuti urutan eksekusi.
 - Nama sheet langsung memakai judul SQL: `Agregat_1a.sql` dengan metadata `Judul: Jumlah usaha` → `Jumlah usaha`. Jika metadata tidak tersedia, nama sheet memakai nama file tanpa `.sql`. Judul lengkap tetap ditulis pada baris 1 meskipun nama sheet dipotong.

@@ -70,6 +70,11 @@ input:focus { border-color: #39745a; box-shadow: 0 0 0 3px rgba(57,116,90,.12); 
 .group-name { overflow-wrap: anywhere; font-size: 13px; font-weight: 750; }
 .group-count { color: #718078; font-size: 10px; }
 .file-list { display: grid; padding: 5px 8px 9px; border-top: 1px solid #d7dcd7; }
+.hemat-box { display: grid; gap: 6px; margin-bottom: 8px; padding: 8px; border: 1px dashed #bdc7bf; border-radius: 6px; background: rgba(255,255,255,.5); }
+.hemat-box .checkbox-row { margin-top: 0; }
+.hemat-box input[type="text"] { padding: 6px 8px; font-size: 11px; }
+.hemat-box input[type="text"]:disabled { opacity: .5; }
+.hemat-box .field-note { margin: 0; }
 .file-list button { overflow: hidden; padding: 7px 8px; border: 0; border-radius: 4px; color: #42534b; background: transparent; font: 11px ui-monospace, SFMono-Regular, monospace; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .file-list button:hover { color: #1f503b; background: #e6eee8; }
 .selection-bar { display: grid; gap: 6px; margin-bottom: 8px; padding: 10px; border: 1px solid #39745a; border-radius: 8px; background: rgba(255,255,255,.75); }

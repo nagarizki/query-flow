@@ -800,7 +800,76 @@ async function runSelected(): Promise<void> {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
     selectionTabId = tab.id;
-    for (const [targetIndex, wilayahTarget] of targets.entries()) {
+    // Mode per-file per-target (tanpa gabung): loop cukup sekali — file di luar,
+    // target di dalam. Jangan dibungkus loop target luar (baris 803 dulu) karena
+    // itu menggandakan menjadi T × (F × T) sehingga query 1..3 mengulang per kab.
+    if (!perFolder && !combine) {
+      const combined = combinedWilayahConfig(wilayah);
+      for (const [index, file] of files.entries()) {
+        if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+        if (index > 0) {
+          const continued = await paceSelection((message) => { statusEl.textContent = `File ${index + 1}/${files.length}: ${file.name} — ${message}`; });
+          if (!continued) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+        }
+        const fileCfg = resolveFolderConfig(folderConfigs[folderOf(file.path)]);
+        if (fileCfg.hematRequest) {
+          const columnError = validateSplitColumnInput(fileCfg.splitColumn);
+          if (columnError) throw new Error(`${file.path}: ${columnError} Matikan hemat untuk folder ini atau perbaiki nama kolom.`);
+          const title = extractSqlTitle(file.content, file.name);
+          const output = new SplitAfterExport(buildSplitBase(runAt, folderOf(file.path), title), fileCfg.splitColumn);
+          currentOutput = output;
+          currentPrefix = "";
+          statusEl.textContent = `File ${index + 1}/${files.length}: ${file.path} — menunggu hasil (1 query gabungan, pisah per ${fileCfg.splitColumn}).`;
+          await runOneFile(file, combined, output, {
+            tabId: tab.id!,
+            signal: selectionController.signal,
+            isStopped: () => selectionStopRequested,
+            report: (message) => { statusEl.textContent = `File ${index + 1}/${files.length}: ${file.name} — ${message}`; },
+            trackRun: (runId) => {
+              selectionRunId = runId;
+              runProgressTargets.set(runId, (runProgress) => {
+                statusEl.textContent = `File ${index + 1}/${files.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
+              });
+            },
+            untrackRun: (runId) => { runProgressTargets.delete(runId); },
+          });
+          doneFiles++;
+          hematFiles++;
+          doneNames.push(`[hemat] ${file.path}`);
+          statusEl.textContent = `Menulis Excel akhir (${file.name}): ${output.groupCount} kab/kota · ${output.totalRows.toLocaleString("id-ID")} baris…`;
+          await output.flush(true);
+          continue;
+        }
+        for (const [innerTargetIndex, innerTarget] of targets.entries()) {
+          const targetPrefix = innerTarget.code ? `${innerTarget.label} [${innerTargetIndex + 1}/${targets.length}] - ` : "";
+          if (index > 0 || innerTargetIndex > 0) {
+            const continued = await paceSelection((message) => { statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${message}`; });
+            if (!continued) throw new Error("Run Terpilih dihentikan oleh pengguna.");
+          }
+          const exportPath = buildExportBasename({ runAt, folder: folderOf(file.path), table: extractSqlTitle(file.content, file.name), wilayah: innerTarget.code });
+          const output = new ChunkedExport(exportPath);
+          currentOutput = output;
+          currentPrefix = targetPrefix;
+          await runOneFile(file, innerTarget.config, output, {
+            tabId: tab.id!,
+            signal: selectionController.signal,
+            isStopped: () => selectionStopRequested,
+            report: (message) => { statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${message}`; },
+            trackRun: (runId) => {
+              selectionRunId = runId;
+              runProgressTargets.set(runId, (runProgress) => {
+                statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
+              });
+            },
+            untrackRun: (runId) => { runProgressTargets.delete(runId); },
+          });
+          doneFiles++;
+          doneNames.push(`${targetPrefix}${file.path}`);
+          statusEl.textContent = `${targetPrefix}Menulis Excel akhir (${file.name}): ${output.totalRows.toLocaleString("id-ID")} baris terkumpul…`;
+          await output.flush(true);
+        }
+      }
+    } else for (const [targetIndex, wilayahTarget] of targets.entries()) {
       if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
       const targetPrefix = wilayahTarget.code ? `${wilayahTarget.label} [${targetIndex + 1}/${targets.length}] - ` : "";
       if (targetIndex > 0) {
@@ -871,72 +940,6 @@ async function runSelected(): Promise<void> {
         }
         statusEl.textContent = `${targetPrefix}Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
         await output.flush(true);
-      } else {
-        const combined = combinedWilayahConfig(wilayah);
-        for (const [index, file] of files.entries()) {
-          if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
-          if (index > 0) {
-            const continued = await paceSelection((message) => { statusEl.textContent = `File ${index + 1}/${files.length}: ${file.name} — ${message}`; });
-            if (!continued) throw new Error("Run Terpilih dihentikan oleh pengguna.");
-          }
-          const fileCfg = resolveFolderConfig(folderConfigs[folderOf(file.path)]);
-          if (fileCfg.hematRequest) {
-            const columnError = validateSplitColumnInput(fileCfg.splitColumn);
-            if (columnError) throw new Error(`${file.path}: ${columnError} Matikan hemat untuk folder ini atau perbaiki nama kolom.`);
-            const title = extractSqlTitle(file.content, file.name);
-            const output = new SplitAfterExport(buildSplitBase(runAt, folderOf(file.path), title), fileCfg.splitColumn);
-            currentOutput = output;
-            currentPrefix = "";
-            statusEl.textContent = `File ${index + 1}/${files.length}: ${file.path} — menunggu hasil (1 query gabungan, pisah per ${fileCfg.splitColumn}).`;
-            await runOneFile(file, combined, output, {
-              tabId: tab.id!,
-              signal: selectionController.signal,
-              isStopped: () => selectionStopRequested,
-              report: (message) => { statusEl.textContent = `File ${index + 1}/${files.length}: ${file.name} — ${message}`; },
-              trackRun: (runId) => {
-                selectionRunId = runId;
-                runProgressTargets.set(runId, (runProgress) => {
-                  statusEl.textContent = `File ${index + 1}/${files.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
-                });
-              },
-              untrackRun: (runId) => { runProgressTargets.delete(runId); },
-            });
-            doneFiles++;
-            hematFiles++;
-            doneNames.push(`[hemat] ${file.path}`);
-            statusEl.textContent = `Menulis Excel akhir (${file.name}): ${output.groupCount} kab/kota · ${output.totalRows.toLocaleString("id-ID")} baris…`;
-            await output.flush(true);
-            continue;
-          }
-          for (const [targetIndex, wilayahTarget] of targets.entries()) {
-            const targetPrefix = wilayahTarget.code ? `${wilayahTarget.label} [${targetIndex + 1}/${targets.length}] - ` : "";
-            if (targetIndex > 0) {
-              const continued = await paceSelection((message) => { statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${message}`; });
-              if (!continued) throw new Error("Run Terpilih dihentikan oleh pengguna.");
-            }
-            const exportPath = buildExportBasename({ runAt, folder: folderOf(file.path), table: extractSqlTitle(file.content, file.name), wilayah: wilayahTarget.code });
-            const output = new ChunkedExport(exportPath);
-            currentOutput = output;
-            currentPrefix = targetPrefix;
-            await runOneFile(file, wilayahTarget.config, output, {
-              tabId: tab.id!,
-              signal: selectionController.signal,
-              isStopped: () => selectionStopRequested,
-              report: (message) => { statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${message}`; },
-              trackRun: (runId) => {
-                selectionRunId = runId;
-                runProgressTargets.set(runId, (runProgress) => {
-                  statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
-                });
-              },
-              untrackRun: (runId) => { runProgressTargets.delete(runId); },
-            });
-            doneFiles++;
-            doneNames.push(`${targetPrefix}${file.path}`);
-            statusEl.textContent = `${targetPrefix}Menulis Excel akhir (${file.name}): ${output.totalRows.toLocaleString("id-ID")} baris terkumpul…`;
-            await output.flush(true);
-          }
-        }
       }
     }
     const looped = targets.length > 1 && hematFiles < doneFiles;

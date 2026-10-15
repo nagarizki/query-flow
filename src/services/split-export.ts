@@ -18,6 +18,7 @@ export interface SplitAfterExportOptions {
   maxWorkbookBytes?: number;
   serialize?: WorkbookSerialize;
   download?: WorkbookDownload;
+  keepCombined?: boolean;
 }
 
 export function validateSplitColumnInput(column: string): string | null {
@@ -94,6 +95,8 @@ export class SplitAfterExport implements FolderExportOutput {
   private readonly maxWorkbookBytes?: number;
   private readonly serialize: WorkbookSerialize;
   private readonly download: WorkbookDownload;
+  // ponytail: combinedOutput mirrors ChunkedExport; drop if combined file is split client-side by caller.
+  private readonly combinedOutput?: ChunkedExport;
   private collectedRows = 0;
 
   constructor(basePath: string, column: string, options: SplitAfterExportOptions = {}) {
@@ -104,6 +107,9 @@ export class SplitAfterExport implements FolderExportOutput {
     this.maxWorkbookBytes = options.maxWorkbookBytes;
     this.serialize = options.serialize ?? serializeWorkbook;
     this.download = options.download ?? downloadWorkbook;
+    if (options.keepCombined) {
+      this.combinedOutput = new ChunkedExport(basePath, this.download, this.maxWorkbookBytes, this.serialize);
+    }
   }
 
   get totalRows(): number {
@@ -115,14 +121,14 @@ export class SplitAfterExport implements FolderExportOutput {
   }
 
   get parts(): number {
-    let total = 0;
+    let total = this.combinedOutput ? this.combinedOutput.parts : 0;
     for (const group of this.groups.values()) total += group.output.parts;
     return total;
   }
 
   /** Rows held in memory across all groups, not yet downloaded. */
   get bufferedRows(): number {
-    let total = 0;
+    let total = this.combinedOutput ? this.combinedOutput.bufferedRows : 0;
     for (const group of this.groups.values()) total += group.output.bufferedRows;
     return total;
   }
@@ -137,6 +143,9 @@ export class SplitAfterExport implements FolderExportOutput {
    */
   async flushIntermediate(onStatus?: (message: string) => void): Promise<boolean> {
     let largest: { output: ChunkedExport; label: string } | null = null;
+    if (this.combinedOutput && this.combinedOutput.bufferedRows > 0) {
+      largest = { output: this.combinedOutput, label: "gabungan" };
+    }
     for (const group of this.groups.values()) {
       if (!largest || group.output.bufferedRows > largest.output.bufferedRows) largest = group;
     }
@@ -164,6 +173,10 @@ export class SplitAfterExport implements FolderExportOutput {
     const entry = this.indexesByFile.get(result.filename);
     if (!entry) throw new Error(`Header hasil tidak tervalidasi pada ${result.filename}.`);
     if (result.rows.length === 0) return;
+
+    if (this.combinedOutput) {
+      await this.combinedOutput.append(result);
+    }
 
     const grouped = new Map<string, { value: unknown; rows: unknown[][] }>();
     for (const row of result.rows) {
@@ -193,6 +206,9 @@ export class SplitAfterExport implements FolderExportOutput {
   }
 
   async flush(final: boolean, partial = false): Promise<void> {
+    if (this.combinedOutput) {
+      await this.combinedOutput.flush(final, partial);
+    }
     for (const group of this.groups.values()) {
       await group.output.flush(final, partial);
     }

@@ -165,3 +165,35 @@ export function targetWilayahTargets(config: WilayahConfig): WilayahTarget[] {
   }
   return [{ code: null, kind: "all", label: "", config }];
 }
+
+export function targetHematTargets(config: WilayahConfig): WilayahTarget[] {
+  if (config.level2.length > 0) {
+    const list = config.level2.map((code) => code.trim()).filter(Boolean);
+    const code = list.length === 1 ? list[0]! : null;
+    return [{
+      code,
+      kind: code ? "kab" : "all",
+      label: code ? `Kab ${code}` : "",
+      config: combinedWilayahConfig(config),
+    }];
+  }
+  if (config.splitLevel1 !== false && config.level1.length > 0) {
+    const list = config.level1.map((code) => code.trim()).filter(Boolean);
+    if (list.length > 0) {
+      return list.map((code) => ({
+        code,
+        kind: "prov" as const,
+        label: `Provinsi ${code}`,
+        config: { level1: [code], level2: [], splitLevel1: config.splitLevel1, splitLevel2: config.splitLevel2 },
+      }));
+    }
+  }
+  const list = config.level1.map((code) => code.trim()).filter(Boolean);
+  const singleCode = list.length === 1 ? list[0]! : null;
+  return [{
+    code: singleCode,
+    kind: singleCode ? "prov" : "all",
+    label: singleCode ? `Provinsi ${singleCode}` : "",
+    config: combinedWilayahConfig(config),
+  }];
+}

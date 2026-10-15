@@ -59,11 +59,13 @@ export const storageKeys = { snapshot: SNAPSHOT_KEY, wilayah: WILAYAH_KEY, folde
 export interface StoredFolderConfig {
   hematRequest?: boolean;
   splitColumn?: string;
+  keepCombined?: boolean;
 }
 
 export interface ResolvedFolderConfig {
   hematRequest: boolean;
   splitColumn: string;
+  keepCombined: boolean;
 }
 
 /** Hemat-request defaults ON; folders without stored config inherit it. */
@@ -72,6 +74,7 @@ export function resolveFolderConfig(stored: StoredFolderConfig | undefined): Res
   return {
     hematRequest: stored?.hematRequest ?? true,
     splitColumn: column ? stored!.splitColumn!.trim() : DEFAULT_SPLIT_COLUMN,
+    keepCombined: stored?.keepCombined ?? false,
   };
 }
 
@@ -86,6 +89,7 @@ function normalizeFolderConfigs(value: unknown): Record<string, StoredFolderConf
     if (typeof candidate.splitColumn === "string" && candidate.splitColumn.trim()) {
       normalized.splitColumn = candidate.splitColumn.trim().slice(0, 64);
     }
+    if (typeof candidate.keepCombined === "boolean") normalized.keepCombined = candidate.keepCombined;
     configs[path] = normalized;
   }
   return configs;

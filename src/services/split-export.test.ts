@@ -5,12 +5,12 @@ import type { QueryResult } from "./excel";
 const result = (filename: string, columns: string[], rows: unknown[][]): QueryResult => ({ filename, title: filename, columns, rows });
 const serialize = async (results: QueryResult[]): Promise<Uint8Array> => new TextEncoder().encode(JSON.stringify(results));
 
-function setup() {
+function setup(options: { keepCombined?: boolean } = {}) {
   const saved: { path: string; results: QueryResult[] }[] = [];
   const download = vi.fn(async (path: string, buffer: Uint8Array) => {
     saved.push({ path, results: JSON.parse(new TextDecoder().decode(buffer)) as QueryResult[] });
   });
-  const output = new SplitAfterExport("20261014_1432_DBNAS", "kode_kab", { serialize, download });
+  const output = new SplitAfterExport("20261014_1432_DBNAS", "kode_kab", { serialize, download, ...options });
   return { output, saved, download };
 }
 
@@ -86,5 +86,21 @@ describe("split-after export", () => {
     expect(saved).toHaveLength(2);
     expect(saved[0]?.path).not.toBe(saved[1]?.path);
     expect(saved.every((entry) => entry.path.startsWith("20261014_1432_DBNAS_"))).toBe(true);
+  });
+
+  it("keeps and downloads combined workbook alongside groups when keepCombined is true", async () => {
+    const { output, saved } = setup({ keepCombined: true });
+    await output.append(result("q1.sql", ["kode_kab", "nilai"], [["3507", 1], ["9708", 2]]));
+    expect(output.totalRows).toBe(2);
+    expect(output.groupCount).toBe(2);
+    await output.flush(true);
+    expect(saved).toHaveLength(3);
+    const combined = saved.find((entry) => entry.path === "20261014_1432_DBNAS");
+    expect(combined?.results[0]?.rows).toEqual([["3507", 1], ["9708", 2]]);
+    const group3507 = saved.find((entry) => entry.path.includes("3507"));
+    expect(group3507?.results[0]?.rows).toEqual([["3507", 1]]);
+    const group9708 = saved.find((entry) => entry.path.includes("9708"));
+    expect(group9708?.results[0]?.rows).toEqual([["9708", 2]]);
+    expect(output.parts).toBe(3);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addWilayahCode, combinedWilayahConfig, describeRegencyExpansion, expandProvincesToRegencies, normalizeWilayah, targetProvinceCodes, targetRegencyCodes, targetWilayahTargets, validateWilayah } from ".";
+import { addWilayahCode, combinedWilayahConfig, describeRegencyExpansion, expandProvincesToRegencies, normalizeWilayah, targetHematTargets, targetProvinceCodes, targetRegencyCodes, targetWilayahTargets, validateWilayah } from ".";
 import { provinceName, regenciesOfProvince } from "./regions";
 
 describe("wilayah validation", () => {
@@ -122,5 +122,43 @@ describe("wilayah validation", () => {
       .toEqual({ level1: ["35"], level2: ["3507"], splitLevel1: undefined, splitLevel2: undefined });
     expect(combinedWilayahConfig({ level1: [], level2: [] }))
       .toEqual({ level1: [], level2: [], splitLevel1: undefined, splitLevel2: undefined });
+  });
+
+  it("splits hemat targets per province when splitLevel1 is on", () => {
+    const targets = targetHematTargets({ level1: ["91", "92", "94", "95", "96", "97"], level2: [] });
+    expect(targets).toHaveLength(6);
+    expect(targets.map((target) => target.code)).toEqual(["91", "92", "94", "95", "96", "97"]);
+    expect(targets.every((target) => target.kind === "prov")).toBe(true);
+    expect(targets[0]?.config.level1).toEqual(["91"]);
+  });
+
+  it("combines all provinces in hemat target when splitLevel1 is off", () => {
+    const targets = targetHematTargets({ level1: ["91", "92"], level2: [], splitLevel1: false });
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.code).toBeNull();
+    expect(targets[0]?.kind).toBe("all");
+    expect(targets[0]?.config.level1).toEqual(["91", "92"]);
+  });
+
+  it("handles single province and level 2 precedence in hemat targets", () => {
+    const single = targetHematTargets({ level1: ["35"], level2: [] });
+    expect(single).toHaveLength(1);
+    expect(single[0]?.code).toBe("35");
+    expect(single[0]?.kind).toBe("prov");
+
+    const kabSingle = targetHematTargets({ level1: ["35"], level2: ["3507"] });
+    expect(kabSingle).toHaveLength(1);
+    expect(kabSingle[0]?.code).toBe("3507");
+    expect(kabSingle[0]?.kind).toBe("kab");
+
+    const kabMulti = targetHematTargets({ level1: ["35"], level2: ["3507", "3515"] });
+    expect(kabMulti).toHaveLength(1);
+    expect(kabMulti[0]?.code).toBeNull();
+    expect(kabMulti[0]?.kind).toBe("all");
+
+    const empty = targetHematTargets({ level1: [], level2: [] });
+    expect(empty).toHaveLength(1);
+    expect(empty[0]?.code).toBeNull();
+    expect(empty[0]?.kind).toBe("all");
   });
 });

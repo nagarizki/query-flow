@@ -160,9 +160,12 @@ Semua tabel dalam satu folder digabung menjadi satu workbook, misalnya `Agregat/
 
 ### Hemat request (aktif per folder)
 
-Setiap folder punya checkbox **Hemat request: 1 query lalu pisah per kab/kota** (default aktif) plus kolom pembagi (default `kode_kabupaten`). Saat aktif, satu folder dijalankan sebagai **1 query gabungan per SQL** (`filter_provinsi='35|32'`), lalu hasilnya dipisah di extension menjadi 1 file Excel per nilai kolom — tanpa ZIP. Contoh: Jatim (38 kab/kota) × 4 SQL = ±152 run loop menjadi 4 run hemat.
+Setiap folder punya checkbox **Hemat request: 1 query lalu pisah per kab/kota** (default aktif), kolom pembagi (default `kode_kabupaten`), dan checkbox **Simpan juga file gabungan (provinsi / folder)** (default nonaktif).
 
-Syarat (karena default aktif): **kolom pembagi wajib ada di semua SQL terpilih** dengan nama yang sama (pencocokan abaikan huruf besar/kecil dan spasi). Jika satu SQL tidak punya kolom itu, batch gagal cepat dengan pesan nama file + header tersedia; matikan hemat untuk folder itu atau perbaiki SQL. Nilai `NULL`/kosong masuk grup `(blank)`. Mode gabung (**Gabung 1 Excel**) tetap memakai loop per wilayah.
+- Saat **Pisahkan file Excel per provinsi** aktif dan filter Level 1 berisi beberapa provinsi (mis. Papua 91, 92, 94, 95, 96, 97), mode hemat request menjalankan **1 query per provinsi** (bukan 42 query per kab/kota).
+- Jika **Simpan juga file gabungan** dicentang, QueryFlow mengunduh file induk gabungan provinsi sekaligus file terpisah per kabupaten/kota (mis. 6 file provinsi + 42 file kab/kota = 48 file dari 6 query).
+- Jika opsi pisah provinsi dimatikan, semua provinsi terpilih digabung dalam 1 query.
+- Syarat (karena default aktif): **kolom pembagi wajib ada di semua SQL terpilih** dengan nama yang sama (pencocokan abaikan huruf besar/kecil dan spasi). Jika satu SQL tidak punya kolom itu, batch gagal cepat dengan pesan nama file + header tersedia; matikan hemat untuk folder itu atau perbaiki SQL. Nilai `NULL`/kosong masuk grup `(blank)`. Mode gabung (**Gabung 1 Excel**) tetap memakai loop per wilayah.
 
 ## Excel Output
 

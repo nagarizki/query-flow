@@ -59,19 +59,23 @@ it("converts serialized high-precision numbers instead of writing JSON", () => {
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-it("builds stamped basenames with table only for single-file runs", () => {
+it("builds stamped basenames with file only for single-file runs and folder for combined runs", () => {
   const runAt = new Date(2026, 9, 14, 14, 32);
+  expect(buildExportBasename({ runAt, folder: "DBNAS", file: "JumlahPerFlag.sql", wilayah: "9708" }))
+    .toBe("20261014_1432_DBNAS_JumlahPerFlag_9708");
   expect(buildExportBasename({ runAt, folder: "DBNAS", table: "JumlahPerFlag", wilayah: "9708" }))
     .toBe("20261014_1432_DBNAS_JumlahPerFlag_9708");
+  expect(buildExportBasename({ runAt, folder: "DBNAS", file: "gabungan_3file", wilayah: "9708" }))
+    .toBe("20261014_1432_DBNAS_gabungan_3file_9708");
   expect(buildExportBasename({ runAt, folder: "DBNAS", wilayah: "9708" }))
     .toBe("20261014_1432_DBNAS_9708");
   expect(buildExportBasename({ runAt, folder: "Agregat/Kategori_A", wilayah: null }))
     .toBe("20261014_1432_Agregat_Kategori_A_NAS");
-  expect(buildExportBasename({ runAt, folder: "DBNAS", table: "A/B: C?", wilayah: "" }))
+  expect(buildExportBasename({ runAt, folder: "DBNAS", file: "A/B: C?.sql", wilayah: "" }))
     .toBe("20261014_1432_DBNAS_A_B__C_NAS");
-  const longTable = "T".repeat(100);
-  expect(buildExportBasename({ runAt, folder: "DBNAS", table: longTable, wilayah: "35" }).split("_")[3])
-    .toHaveLength(40);
+  const longFile = "T".repeat(100);
+  expect(buildExportBasename({ runAt, folder: "DBNAS", file: longFile, wilayah: "35" }).split("_")[3])
+    .toHaveLength(60);
 });
 
 it("uses Chrome downloads for automatic parts and reports download rejection", async () => {

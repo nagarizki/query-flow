@@ -169,7 +169,7 @@ Setiap folder punya checkbox **Hemat request: 1 query lalu pisah per kab/kota** 
 
 ## Excel Output
 
-- Nama file mengikuti pola `YYYYMMDD_HHMM_Folder[_Tabel]_Wilayah`: Run Folder `DBNAS` per kab `9708` → `20261014_1432_DBNAS_9708.xlsx`; Run 1 file bertabel `JumlahPerFlag` → `20261014_1432_DBNAS_JumlahPerFlag_9708.xlsx`. Stamp memakai **waktu lokal browser** saat Run diklik (sama untuk semua file dalam satu run) sehingga sort nama = urutan kronologis. Tanpa filter wilayah `NAS` dipakai sebagai segmen wilayah. Hasil besar pecah `_part-001`, gagal/Stop tambah `_partial` — selalu paling belakang.
+- Nama file mengikuti pola `YYYYMMDD_HHMM_Folder[_NamaFile]_Wilayah`: Run Folder `DBNAS` per kab `9708` → `20261014_1432_DBNAS_9708.xlsx`; Run 1 file `JumlahPerFlag.sql` → `20261014_1432_DBNAS_JumlahPerFlag_9708.xlsx`; Run seleksi gabungan → `20261014_1432_DBNAS_gabungan_3file_9708.xlsx`. Stamp memakai **waktu lokal browser** saat Run diklik (sama untuk semua file dalam satu run) sehingga sort nama = urutan kronologis. Tanpa filter wilayah `NAS` dipakai sebagai segmen wilayah. Hasil besar pecah `_part-001`, gagal/Stop tambah `_partial` — selalu paling belakang.
 - Workbook mengikuti path folder tanpa awalan `Hasil_`: `Agregat/Kategori_A` → `Agregat_Kategori_A.xlsx`. Pemisah folder dan karakter khusus diganti underscore sehingga folder Agregat dan Mikro dapat dibedakan.
 - Satu hasil SQL menjadi satu sheet, mengikuti urutan eksekusi.
 - Nama sheet langsung memakai judul SQL: `Agregat_1a.sql` dengan metadata `Judul: Jumlah usaha` → `Jumlah usaha`. Jika metadata tidak tersedia, nama sheet memakai nama file tanpa `.sql`. Judul lengkap tetap ditulis pada baris 1 meskipun nama sheet dipotong.

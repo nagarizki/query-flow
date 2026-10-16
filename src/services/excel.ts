@@ -145,7 +145,9 @@ export interface ExportBasenameOptions {
   runAt: Date;
   /** Folder path (e.g. group.path) or single-file base path without extension. */
   folder: string;
-  /** Table title/basename; only for single-file runs. Omitted for folder runs. */
+  /** File name/basename (e.g. NamaFile.sql); only for single-file runs. Omitted for combined/folder runs. */
+  file?: string;
+  /** Table title/basename; legacy alias for file. */
   table?: string;
   /** Region code as-is (2-4 digits); null/empty renders as NAS. */
   wilayah?: string | null;
@@ -166,26 +168,27 @@ function sanitizeBasenameSegment(value: string, maxLength: number): string {
 }
 
 /**
- * Stamped folder/table base without wilayah segment or extension:
- * YYYYMMDD_HHMM_FOLDER[_TABEL]. SplitAfterExport appends _slug_hash per
+ * Stamped folder/file base without wilayah segment or extension:
+ * YYYYMMDD_HHMM_FOLDER[_FILE]. SplitAfterExport appends _slug_hash per
  * group; buildExportBasename appends the wilayah segment.
  */
-export function buildSplitBase(runAt: Date, folder: string, table?: string): string {
+export function buildSplitBase(runAt: Date, folder: string, file?: string): string {
   const cleanFolder = sanitizeBasenameSegment(folder.replace(/^\/+|\/+$/g, ""), 120) || "Query";
   const parts = [formatRunStamp(runAt), cleanFolder];
-  const cleanTable = table !== undefined ? sanitizeBasenameSegment(table, 40) : "";
-  if (cleanTable) parts.push(cleanTable);
+  const cleanFile = file !== undefined ? sanitizeBasenameSegment(file, 60) : "";
+  if (cleanFile) parts.push(cleanFile);
   return parts.join("_");
 }
 
 /**
- * YYYYMMDD_HHMM_FOLDER[_TABEL]_WILAYAH without extension or _part/_partial
+ * YYYYMMDD_HHMM_FOLDER[_FILE]_WILAYAH without extension or _part/_partial
  * suffixes (those stay appended last by ChunkedExport.drain so lexical sort
- * stays chronological). Single-file runs pass table; folder runs omit it.
+ * stays chronological). Single-file runs pass file; folder runs omit it.
  */
 export function buildExportBasename(options: ExportBasenameOptions): string {
+  const fileSegment = options.file ?? options.table;
   const wilayah = options.wilayah ? sanitizeBasenameSegment(options.wilayah, 40) : "";
-  return `${buildSplitBase(options.runAt, options.folder, options.table)}_${wilayah || "NAS"}`;
+  return `${buildSplitBase(options.runAt, options.folder, fileSegment)}_${wilayah || "NAS"}`;
 }
 
 export function workbookFilename(path: string): string {

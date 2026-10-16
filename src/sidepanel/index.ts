@@ -99,7 +99,7 @@ app.innerHTML = `
             <li>QueryFlow memberi jeda ±2,5 dtk antar query/chunk, ±3 dtk antar file, ±5 dtk antar wilayah agar di bawah batas DB <strong>30 query/menit</strong>. Kena 429 ditunggu otomatis ±65 dtk lalu dilanjut dari baris yang sama (maks 5x).</li>
             <li><strong>Stop</strong> atau error tetap mengunduh hasil yang sudah terkumpul sebagai Excel parsial; nama file yang sudah selesai ikut ditampilkan agar sisa file mudah diseleksi ulang via checkbox → Run Terpilih.</li>
             <li><strong>Hemat request</strong> (aktif per folder): 1 query gabungan per SQL lalu hasil dipisah per nilai kolom (default <strong>kode_kabupaten</strong>) menjadi 1 file Excel per kab/kota. Kolom wajib ada di semua SQL terpilih; gabung (<strong>Gabung 1 Excel</strong>) tetap memakai loop per wilayah.</li>
-            <li>Nama file <strong>TGL_JAM_Folder_Tabel_Wilayah</strong> (waktu lokal browser), mis. <strong>20261014_1432_DBNAS_JumlahPerFlag_9708.xlsx</strong>; hasil besar pecah <strong>_part-001</strong>, gagal/Stop jadi <strong>_partial</strong>.</li>
+            <li>Nama file <strong>TGL_JAM_Folder_File_Wilayah</strong> (atau <strong>TGL_JAM_Folder_Wilayah</strong> untuk gabungan folder), mis. <strong>20261014_1432_DBNAS_JumlahPerFlag_9708.xlsx</strong>; hasil besar pecah <strong>_part-001</strong>, gagal/Stop jadi <strong>_partial</strong>.</li>
           </ul>
         </div>
       </details>
@@ -691,7 +691,6 @@ function renderGroups(): void {
         controller = new AbortController();
         const runAt = new Date();
         const targets = fileRunCfg.hematRequest ? [] : targetWilayahTargets(wilayah);
-        const title = extractSqlTitle(file.content, file.name);
         let currentOutput: FolderExportOutput | null = null;
         let currentPrefix = "";
         try {
@@ -712,7 +711,7 @@ function renderGroups(): void {
               }
               const provPrefix = target.code ? `${target.label} [${targetIndex + 1}/${hematTargets.length}] - ` : "";
               currentPrefix = provPrefix;
-              const exportPath = buildExportBasename({ runAt, folder: group.path, table: title, wilayah: target.code });
+              const exportPath = buildExportBasename({ runAt, folder: group.path, file: file.name, wilayah: target.code });
               const output = new SplitAfterExport(exportPath, fileRunCfg.splitColumn, { keepCombined: fileRunCfg.keepCombined });
               currentOutput = output;
               status.textContent = `${provPrefix}Mengirim SQL ke editor aktif (hemat, pisah per ${fileRunCfg.splitColumn})...`;
@@ -749,7 +748,7 @@ function renderGroups(): void {
               if (!continued) throw new Error("Run dihentikan oleh pengguna.");
             }
             const activeConfig: WilayahConfig = wilayahTarget.config;
-            const exportPath = buildExportBasename({ runAt, folder: group.path, table: title, wilayah: wilayahTarget.code });
+            const exportPath = buildExportBasename({ runAt, folder: group.path, file: file.name, wilayah: wilayahTarget.code });
             const output = new ChunkedExport(exportPath);
             currentOutput = output;
             const provPrefix = wilayahTarget.code ? `${wilayahTarget.label} [${targetIndex + 1}/${targets.length}] - ` : "";
@@ -888,7 +887,6 @@ async function runSelected(): Promise<void> {
         if (fileCfg.hematRequest) {
           const columnError = validateSplitColumnInput(fileCfg.splitColumn);
           if (columnError) throw new Error(`${file.path}: ${columnError} Matikan hemat untuk folder ini atau perbaiki nama kolom.`);
-          const title = extractSqlTitle(file.content, file.name);
           const hematTargets = targetHematTargets(wilayah);
           for (const [targetIndex, target] of hematTargets.entries()) {
             if (index > 0 || targetIndex > 0) {
@@ -897,7 +895,7 @@ async function runSelected(): Promise<void> {
             }
             const provPrefix = target.code ? `${target.label} [${targetIndex + 1}/${hematTargets.length}] - ` : "";
             currentPrefix = provPrefix;
-            const exportPath = buildExportBasename({ runAt, folder: folderOf(file.path), table: title, wilayah: target.code });
+            const exportPath = buildExportBasename({ runAt, folder: folderOf(file.path), file: file.name, wilayah: target.code });
             const output = new SplitAfterExport(exportPath, fileCfg.splitColumn, { keepCombined: fileCfg.keepCombined });
             currentOutput = output;
             statusEl.textContent = `${provPrefix}File ${index + 1}/${files.length}: ${file.path} — menunggu hasil (hemat, pisah per ${fileCfg.splitColumn}).`;
@@ -928,7 +926,7 @@ async function runSelected(): Promise<void> {
             const continued = await paceSelection((message) => { statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.name} — ${message}`; });
             if (!continued) throw new Error("Run Terpilih dihentikan oleh pengguna.");
           }
-          const exportPath = buildExportBasename({ runAt, folder: folderOf(file.path), table: extractSqlTitle(file.content, file.name), wilayah: innerTarget.code });
+          const exportPath = buildExportBasename({ runAt, folder: folderOf(file.path), file: file.name, wilayah: innerTarget.code });
           const output = new ChunkedExport(exportPath);
           currentOutput = output;
           currentPrefix = targetPrefix;
@@ -961,7 +959,7 @@ async function runSelected(): Promise<void> {
       if (perFolder) {
         for (const [bucketIndex, bucket] of folderBuckets.entries()) {
           if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
-          const base = buildExportBasename({ runAt, folder: `${bucket.folder}_gabungan_${bucket.files.length}file`, wilayah: wilayahTarget.code });
+          const base = buildExportBasename({ runAt, folder: bucket.folder, file: `gabungan_${bucket.files.length}file`, wilayah: wilayahTarget.code });
           const output = new ChunkedExport(base);
           currentOutput = output;
           currentPrefix = targetPrefix;
@@ -993,7 +991,7 @@ async function runSelected(): Promise<void> {
           await output.flush(true);
         }
       } else if (combine) {
-        const exportPath = buildExportBasename({ runAt, folder: `${folderOf(files[0]?.path ?? "seleksi")}_seleksi_${files.length}file`, wilayah: wilayahTarget.code });
+        const exportPath = buildExportBasename({ runAt, folder: folderOf(files[0]?.path ?? "seleksi"), file: `gabungan_${files.length}file`, wilayah: wilayahTarget.code });
         const output = new ChunkedExport(exportPath);
         currentOutput = output;
         currentPrefix = targetPrefix;

@@ -52,7 +52,13 @@ export async function saveWilayah(config: WilayahConfig): Promise<void> {
 }
 
 export const FOLDER_CONFIGS_KEY = "folderConfigs";
-export const DEFAULT_SPLIT_COLUMN = "level_2_full_code, kode_kabkot, kode_kabupaten";
+export const DEFAULT_SPLIT_COLUMN =
+  "level_2_full_code, level_2_code, kode_kabkota, kode_kabupaten, kode_kabkot, wilayah";
+
+const LEGACY_DEFAULT_SPLIT_COLUMNS = new Set([
+  "kode_kabupaten",
+  "level_2_full_code, kode_kabkot, kode_kabupaten",
+]);
 
 export const storageKeys = { snapshot: SNAPSHOT_KEY, wilayah: WILAYAH_KEY, folderConfigs: FOLDER_CONFIGS_KEY } as const;
 
@@ -71,9 +77,12 @@ export interface ResolvedFolderConfig {
 /** Hemat-request defaults ON; folders without stored config inherit it. */
 export function resolveFolderConfig(stored: StoredFolderConfig | undefined): ResolvedFolderConfig {
   const column = stored?.splitColumn?.trim();
+  const effectiveColumn = !column || LEGACY_DEFAULT_SPLIT_COLUMNS.has(column)
+    ? DEFAULT_SPLIT_COLUMN
+    : column;
   return {
     hematRequest: stored?.hematRequest ?? true,
-    splitColumn: column ? stored!.splitColumn!.trim() : DEFAULT_SPLIT_COLUMN,
+    splitColumn: effectiveColumn,
     keepCombined: stored?.keepCombined ?? false,
   };
 }

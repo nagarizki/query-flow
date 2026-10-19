@@ -399,7 +399,7 @@ function renderGroups(): void {
     splitInput.disabled = !hematRequest;
     splitInput.autocomplete = "off";
     splitInput.setAttribute("aria-label", "Kolom pembagi kabupaten/kota");
-    splitInput.title = "Pisahkan dengan koma jika ada beberapa kemungkinan nama kolom (contoh: level_2_full_code, kode_kabkot)";
+    splitInput.title = "Pisahkan dengan koma jika ada beberapa kemungkinan nama kolom (contoh: level_2_full_code, level_2_code, kode_kabkota)";
     const keepCombinedLabel = document.createElement("label");
     keepCombinedLabel.className = "checkbox-row";
     const keepCombinedInput = document.createElement("input");

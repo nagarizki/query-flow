@@ -19,6 +19,11 @@ it("defaults folders without stored config to hemat-request ON", () => {
   expect(resolveFolderConfig({ hematRequest: true, keepCombined: true })).toEqual({ hematRequest: true, splitColumn: DEFAULT_SPLIT_COLUMN, keepCombined: true });
 });
 
+it("migrates legacy default split columns to current multi-identifier default", () => {
+  expect(resolveFolderConfig({ splitColumn: "kode_kabupaten" }).splitColumn).toBe(DEFAULT_SPLIT_COLUMN);
+  expect(resolveFolderConfig({ splitColumn: "level_2_full_code, kode_kabkot, kode_kabupaten" }).splitColumn).toBe(DEFAULT_SPLIT_COLUMN);
+});
+
 it("round-trips folder configs while dropping invalid entries", async () => {
   const stored: Record<string, unknown> = {};
   stubStorage(stored);

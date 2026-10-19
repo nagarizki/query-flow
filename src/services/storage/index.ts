@@ -52,7 +52,7 @@ export async function saveWilayah(config: WilayahConfig): Promise<void> {
 }
 
 export const FOLDER_CONFIGS_KEY = "folderConfigs";
-export const DEFAULT_SPLIT_COLUMN = "kode_kabupaten";
+export const DEFAULT_SPLIT_COLUMN = "level_2_full_code, kode_kabkot, kode_kabupaten";
 
 export const storageKeys = { snapshot: SNAPSHOT_KEY, wilayah: WILAYAH_KEY, folderConfigs: FOLDER_CONFIGS_KEY } as const;
 
@@ -87,7 +87,7 @@ function normalizeFolderConfigs(value: unknown): Record<string, StoredFolderConf
     const normalized: StoredFolderConfig = {};
     if (typeof candidate.hematRequest === "boolean") normalized.hematRequest = candidate.hematRequest;
     if (typeof candidate.splitColumn === "string" && candidate.splitColumn.trim()) {
-      normalized.splitColumn = candidate.splitColumn.trim().slice(0, 64);
+      normalized.splitColumn = candidate.splitColumn.trim().slice(0, 256);
     }
     if (typeof candidate.keepCombined === "boolean") normalized.keepCombined = candidate.keepCombined;
     configs[path] = normalized;

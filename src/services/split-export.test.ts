@@ -20,6 +20,18 @@ describe("split column resolution", () => {
     expect(resolveSplitColumnIndex(["kab", "nilai"], " KAB ", "a.sql")).toBe(0);
   });
 
+  it("resolves the first matching candidate when multiple identifiers are configured", () => {
+    const multi = "level_2_full_code, kode_kabkot, kode_kab";
+    expect(resolveSplitColumnIndex(["level_2_full_code", "nilai"], multi, "q1.sql")).toBe(0);
+    expect(resolveSplitColumnIndex(["kode_kabkot", "nilai"], multi, "q2.sql")).toBe(0);
+    expect(resolveSplitColumnIndex(["id", "kode_kab"], multi, "q3.sql")).toBe(1);
+  });
+
+  it("fails when none of the candidates match", () => {
+    expect(() => resolveSplitColumnIndex(["id", "nilai"], "level_2_full_code, kode_kabkot", "q.sql"))
+      .toThrow(/level_2_full_code, kode_kabkot.*q\.sql.*id, nilai/i);
+  });
+
   it("fails when the header is absent or ambiguous", () => {
     expect(() => resolveSplitColumnIndex(["kab", "nilai"], "kategori", "c.sql"))
       .toThrow(/kategori.*c\.sql.*kab, nilai/i);

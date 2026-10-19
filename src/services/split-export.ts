@@ -22,23 +22,32 @@ export interface SplitAfterExportOptions {
 }
 
 export function validateSplitColumnInput(column: string): string | null {
-  if (!column.trim()) return "Isi nama kolom untuk memisahkan hasil per kabupaten/kota.";
+  const candidates = column.split(",").map((item) => item.trim()).filter(Boolean);
+  if (candidates.length === 0) return "Isi nama kolom untuk memisahkan hasil per kabupaten/kota.";
   return null;
 }
 
 export function resolveSplitColumnIndex(columns: string[], requested: string, filename: string): number {
-  const normalized = requested.trim().toLocaleLowerCase();
-  const matches = columns.flatMap((column, index) =>
-    column.trim().toLocaleLowerCase() === normalized ? [index] : [],
-  );
-  if (matches.length === 0) {
-    const available = columns.length ? columns.join(", ") : "(tidak ada)";
-    throw new Error(`Kolom pembagi "${requested}" tidak ditemukan pada ${filename}. Header tersedia: ${available}.`);
+  const candidates = requested
+    .split(",")
+    .map((item) => item.trim().toLocaleLowerCase())
+    .filter(Boolean);
+  const normalizedCols = columns.map((column) => column.trim().toLocaleLowerCase());
+
+  for (const candidate of candidates) {
+    const matches = normalizedCols.flatMap((column, index) => (column === candidate ? [index] : []));
+    if (matches.length > 1) {
+      throw new Error(`Kolom pembagi "${candidate}" ambigu pada ${filename}; header hasil mengandung nama duplikat.`);
+    }
+    if (matches.length === 1) {
+      return matches[0]!;
+    }
   }
-  if (matches.length > 1) {
-    throw new Error(`Kolom pembagi "${requested}" ambigu pada ${filename}; header hasil mengandung nama duplikat.`);
-  }
-  return matches[0]!;
+
+  // ponytail: langsung throw; upgrade ke fallback simpan un-split jika user minta batch lanjut tanpa henti
+  const available = columns.length ? columns.join(", ") : "(tidak ada)";
+  const requestedLabel = candidates.length > 1 ? `[${candidates.join(", ")}]` : `"${candidates[0] ?? requested.trim()}"`;
+  throw new Error(`Kolom pembagi ${requestedLabel} tidak ditemukan pada ${filename}. Header tersedia: ${available}.`);
 }
 
 function valueIdentity(value: unknown): unknown[] {

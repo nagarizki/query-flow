@@ -165,11 +165,11 @@ Setiap folder punya checkbox **Hemat request: 1 query lalu pisah per kab/kota** 
 - Saat **Pisahkan file Excel per provinsi** aktif dan filter Level 1 berisi beberapa provinsi (mis. Papua 91, 92, 94, 95, 96, 97), mode hemat request menjalankan **1 query per provinsi** (bukan 42 query per kab/kota).
 - Jika **Simpan juga file gabungan** dicentang, QueryFlow mengunduh file induk gabungan provinsi sekaligus file terpisah per kabupaten/kota (mis. 6 file provinsi + 42 file kab/kota = 48 file dari 6 query).
 - Jika opsi pisah provinsi dimatikan, semua provinsi terpilih digabung dalam 1 query.
-- Syarat (karena default aktif): **kolom pembagi wajib ada di semua SQL terpilih** dengan nama yang sama (pencocokan abaikan huruf besar/kecil dan spasi). Jika satu SQL tidak punya kolom itu, batch gagal cepat dengan pesan nama file + header tersedia; matikan hemat untuk folder itu atau perbaiki SQL. Nilai `NULL`/kosong masuk grup `(blank)`. Mode gabung (**Gabung 1 Excel**) tetap memakai loop per wilayah.
+- Syarat (karena default aktif): **kolom pembagi** dicari di semua SQL terpilih dengan nama yang sama (pencocokan abaikan huruf besar/kecil dan spasi). Jika satu SQL tidak punya kolom itu, file tersebut **disimpan tanpa dipisah** (nama berakhiran `_unsplit_<file>`) dan batch lanjut; panel menampilkan nama file + header tersedia. Matikan hemat untuk folder itu atau perbaiki SQL jika pemisahan wajib. Nilai `NULL`/kosong masuk grup `(blank)`. Mode gabung (**Gabung 1 Excel**) tetap memakai loop per wilayah.
 
 ## Excel Output
 
-- Nama file mengikuti pola `YYYYMMDD_HHMM_Folder[_NamaFile]_Wilayah`: Run Folder `DBNAS` per kab `9708` → `20261014_1432_DBNAS_9708.xlsx`; Run 1 file `JumlahPerFlag.sql` → `20261014_1432_DBNAS_JumlahPerFlag_9708.xlsx`; Run seleksi gabungan → `20261014_1432_DBNAS_gabungan_3file_9708.xlsx`. Stamp memakai **waktu lokal browser** saat Run diklik (sama untuk semua file dalam satu run) sehingga sort nama = urutan kronologis. Tanpa filter wilayah `NAS` dipakai sebagai segmen wilayah. Hasil besar pecah `_part-001`, gagal/Stop tambah `_partial` — selalu paling belakang.
+- Nama file mengikuti pola `YYYYMMDD_HHMM_Folder[_NamaFile][_Wilayah]`: Run Folder `DBNAS` per kab `9708` → `20261014_1432_DBNAS_9708.xlsx`; Run 1 file `JumlahPerFlag.sql` → `20261014_1432_DBNAS_JumlahPerFlag_9708.xlsx`; Run seleksi gabungan → `20261014_1432_DBNAS_gabungan_3file_9708.xlsx`. Stamp memakai **waktu lokal browser** saat Run diklik (sama untuk semua file dalam satu run) sehingga sort nama = urutan kronologis. Tanpa filter wilayah, segmen wilayah ditiadakan. Hasil besar pecah `_part-001`, gagal/Stop tambah `_partial` — selalu paling belakang.
 - Workbook mengikuti path folder tanpa awalan `Hasil_`: `Agregat/Kategori_A` → `Agregat_Kategori_A.xlsx`. Pemisah folder dan karakter khusus diganti underscore sehingga folder Agregat dan Mikro dapat dibedakan.
 - Satu hasil SQL menjadi satu sheet, mengikuti urutan eksekusi.
 - Nama sheet langsung memakai judul SQL: `Agregat_1a.sql` dengan metadata `Judul: Jumlah usaha` → `Jumlah usaha`. Jika metadata tidak tersedia, nama sheet memakai nama file tanpa `.sql`. Judul lengkap tetap ditulis pada baris 1 meskipun nama sheet dipotong.
@@ -186,7 +186,9 @@ QueryFlow menambahkan `ORDER BY 1 ASC` bila query belum memiliki ORDER BY tingka
 
 ## Jika Eksekusi Gagal
 
-Query berjalan berurutan dengan batas tunggu empat menit per chunk. Jika satu query gagal atau Stop ditekan, query berikutnya tidak dijalankan. Semua chunk yang sudah diterima tetap diekspor, termasuk query sebelumnya dalam folder dan chunk selesai dari query aktif. Hasil yang terkumpul digabung dan langsung diunduh dengan suffix `_partial.xlsx`, dengan aturan pemecahan 20 MiB yang sama. Jika belum ada hasil, panel menyatakannya tanpa membuat file kosong.
+Query berjalan berurutan dengan batas tunggu empat menit per chunk. Hasil kosong bukan kegagalan: query yang tidak mengembalikan baris dicatat sebagai "tanpa data" dan batch lanjut. Error yang hanya mengenai satu file (SQL error, kolom pembagi tidak ada, batas tunggu chunk) juga **tidak menghentikan batch** — file itu dilewati, dilaporkan di panel, lalu file berikutnya dijalankan. Batch hanya berhenti saat Stop ditekan, tab SQL Lab hilang, atau batas 30 query/menit tetap gagal setelah semua retry.
+
+Saat batch berhenti, semua chunk yang sudah diterima tetap diekspor (termasuk file yang gagal di tengah pagination, ditandai `_partial`). Jika belum ada hasil, panel menyatakannya tanpa membuat file kosong. Ringkasan akhir menyebut jumlah file berisi data, file tanpa data, dan file gagal.
 
 Tombol Stop mengirim pembatalan ke proses QueryFlow dan menekan Stop pada SQL Lab jika tombolnya tersedia. Baris dari chunk yang masih berjalan dan belum menghasilkan respons sukses belum dapat diunduh. Panel menampilkan jumlah baris dan file yang berhasil dikirim ke unduhan Chrome. Jika ekspor Excel sendiri gagal, panel melaporkan kegagalan tersebut.
 

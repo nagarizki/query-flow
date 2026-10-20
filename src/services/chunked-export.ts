@@ -213,14 +213,25 @@ export async function collectQuery(
       }
       throw new Error(response.message);
     }
+    // An empty page means "no data". On the first page that is a successful
+    // result, never a batch error, so long-run folders keep going. Only a
+    // header can become a workbook; a query without a result set is skipped.
+    if (!response.rows.length) {
+      if (response.hasMore) {
+        throw new Error("Chunk kosong tetapi hasil belum selesai; proses dihentikan agar tidak mengulang tanpa akhir.");
+      }
+      if (offset === 0 && response.columns.length) await accept(response.columns, []);
+      transientAttempts = 0;
+      rateLimitAttempts = 0;
+      return;
+    }
     // A chunk that finished concurrently with Stop is still valid and exported.
-    if (response.rows.length || offset === 0) await accept(response.columns, response.rows);
+    await accept(response.columns, response.rows);
     offset += response.rows.length;
     transientAttempts = 0;
     rateLimitAttempts = 0;
     if (stopped()) break;
     if (!response.hasMore) return;
-    if (!response.rows.length) throw new Error("Chunk kosong tetapi hasil belum selesai; proses dihentikan agar tidak mengulang tanpa akhir.");
     // Match subsequent SQL pages to the transfer budget for wide rows.
     limit = Math.min(limit, response.rows.length);
     iteration++;

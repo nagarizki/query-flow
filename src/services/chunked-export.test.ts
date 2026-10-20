@@ -167,6 +167,28 @@ describe("automatic chunk collection", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
+  it("treats a first page with zero rows as a successful no-data result", async () => {
+    const request = vi.fn(async () => chunk([]));
+    const accept = vi.fn(async () => {});
+    await expect(collectQuery(request, accept, () => false, vi.fn(), undefined, { minIntervalMs: 0 })).resolves.toBeUndefined();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(accept).toHaveBeenCalledWith(["id"], []);
+  });
+
+  it("skips a query that returns no result set instead of exporting an empty header", async () => {
+    const request = vi.fn(async () => ({ ok: true as const, message: "OK", columns: [], rows: [], hasMore: false }));
+    const accept = vi.fn(async () => {});
+    await expect(collectQuery(request, accept, () => false, vi.fn(), undefined, { minIntervalMs: 0 })).resolves.toBeUndefined();
+    expect(accept).not.toHaveBeenCalled();
+  });
+
+  it("still aborts when an empty chunk appears mid-pagination", async () => {
+    const request = vi.fn<() => Promise<SqlChunkResponse>>()
+      .mockResolvedValueOnce(chunk([[1]], true))
+      .mockResolvedValueOnce(chunk([], true));
+    await expect(collectQuery(request, vi.fn(), () => false, vi.fn(), undefined, { minIntervalMs: 0 })).rejects.toThrow(/Chunk kosong/);
+  });
+
   it("retries a dropped message channel at the same offset instead of aborting", async () => {
     const request = vi.fn<(...args: number[]) => Promise<SqlChunkResponse>>()
       .mockRejectedValueOnce(new Error("A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received."))

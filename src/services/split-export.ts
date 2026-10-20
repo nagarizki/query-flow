@@ -19,6 +19,8 @@ export interface SplitAfterExportOptions {
   serialize?: WorkbookSerialize;
   download?: WorkbookDownload;
   keepCombined?: boolean;
+  /** Called once per file saved without splitting because the column is absent. */
+  onFallback?: (message: string) => void;
 }
 
 export function validateSplitColumnInput(column: string): string | null {
@@ -26,6 +28,9 @@ export function validateSplitColumnInput(column: string): string | null {
   if (candidates.length === 0) return "Isi nama kolom untuk memisahkan hasil per kabupaten/kota.";
   return null;
 }
+
+/** The configured split column is not part of this file's result header. */
+export class SplitColumnNotFoundError extends Error {}
 
 export function resolveSplitColumnIndex(columns: string[], requested: string, filename: string): number {
   const candidates = requested
@@ -44,10 +49,9 @@ export function resolveSplitColumnIndex(columns: string[], requested: string, fi
     }
   }
 
-  // ponytail: langsung throw; upgrade ke fallback simpan un-split jika user minta batch lanjut tanpa henti
-  const available = columns.length ? columns.join(", ") : "(tidak ada)";
+  const available = columns.length ? columns.join(", ") : "(tidak ada; query tidak mengembalikan baris)";
   const requestedLabel = candidates.length > 1 ? `[${candidates.join(", ")}]` : `"${candidates[0] ?? requested.trim()}"`;
-  throw new Error(`Kolom pembagi ${requestedLabel} tidak ditemukan pada ${filename}. Header tersedia: ${available}.`);
+  throw new SplitColumnNotFoundError(`Kolom pembagi ${requestedLabel} tidak ditemukan pada ${filename}. Header tersedia: ${available}.`);
 }
 
 function valueIdentity(value: unknown): unknown[] {
@@ -99,11 +103,13 @@ export class SplitAfterExport implements FolderExportOutput {
   private readonly column: string;
   private readonly groups = new Map<string, { output: ChunkedExport; label: string }>();
   private readonly usedPaths = new Set<string>();
-  private readonly indexesByFile = new Map<string, { headers: string[]; index: number }>();
+  private readonly indexesByFile = new Map<string, { headers: string[]; index: number | null }>();
+  private readonly unsplit = new Map<string, ChunkedExport>();
   private readonly basePath: string;
   private readonly maxWorkbookBytes?: number;
   private readonly serialize: WorkbookSerialize;
   private readonly download: WorkbookDownload;
+  private readonly onFallback?: (message: string) => void;
   // ponytail: combinedOutput mirrors ChunkedExport; drop if combined file is split client-side by caller.
   private readonly combinedOutput?: ChunkedExport;
   private collectedRows = 0;
@@ -116,6 +122,7 @@ export class SplitAfterExport implements FolderExportOutput {
     this.maxWorkbookBytes = options.maxWorkbookBytes;
     this.serialize = options.serialize ?? serializeWorkbook;
     this.download = options.download ?? downloadWorkbook;
+    this.onFallback = options.onFallback;
     if (options.keepCombined) {
       this.combinedOutput = new ChunkedExport(basePath, this.download, this.maxWorkbookBytes, this.serialize);
     }
@@ -132,6 +139,7 @@ export class SplitAfterExport implements FolderExportOutput {
   get parts(): number {
     let total = this.combinedOutput ? this.combinedOutput.parts : 0;
     for (const group of this.groups.values()) total += group.output.parts;
+    for (const output of this.unsplit.values()) total += output.parts;
     return total;
   }
 
@@ -139,6 +147,7 @@ export class SplitAfterExport implements FolderExportOutput {
   get bufferedRows(): number {
     let total = this.combinedOutput ? this.combinedOutput.bufferedRows : 0;
     for (const group of this.groups.values()) total += group.output.bufferedRows;
+    for (const output of this.unsplit.values()) total += output.bufferedRows;
     return total;
   }
 
@@ -158,6 +167,10 @@ export class SplitAfterExport implements FolderExportOutput {
     for (const group of this.groups.values()) {
       if (!largest || group.output.bufferedRows > largest.output.bufferedRows) largest = group;
     }
+    for (const [filename, output] of this.unsplit) {
+      if (output.bufferedRows === 0) continue;
+      if (!largest || output.bufferedRows > largest.output.bufferedRows) largest = { output, label: filename };
+    }
     if (!largest || largest.output.bufferedRows === 0) return false;
     onStatus?.(`Menulis Excel sementara grup ${largest.label} agar panel tidak crash…`);
     const done = await largest.output.flushIntermediate(onStatus);
@@ -173,8 +186,29 @@ export class SplitAfterExport implements FolderExportOutput {
       }
       return;
     }
-    const index = resolveSplitColumnIndex(columns, this.column, filename);
+    let index: number | null;
+    try {
+      index = resolveSplitColumnIndex(columns, this.column, filename);
+    } catch (error) {
+      if (!(error instanceof SplitColumnNotFoundError)) throw error;
+      index = null;
+      this.onFallback?.(`${error.message} File disimpan tanpa dipisah agar batch lanjut.`);
+    }
     this.indexesByFile.set(filename, { headers: normalizedHeaders, index });
+  }
+
+  /** Fallback workbook for a file whose result header lacks the split column. */
+  private unsplitOutputFor(filename: string): ChunkedExport {
+    const existing = this.unsplit.get(filename);
+    if (existing) return existing;
+    const stem = `${this.basePath}_unsplit_${slug(filename) || "file"}`.slice(0, 180);
+    let path = stem;
+    let collision = 2;
+    while (this.usedPaths.has(path)) path = `${stem}_${collision++}`;
+    this.usedPaths.add(path);
+    const output = new ChunkedExport(path, this.download, this.maxWorkbookBytes, this.serialize);
+    this.unsplit.set(filename, output);
+    return output;
   }
 
   async append(result: QueryResult): Promise<void> {
@@ -185,6 +219,12 @@ export class SplitAfterExport implements FolderExportOutput {
 
     if (this.combinedOutput) {
       await this.combinedOutput.append(result);
+    }
+
+    if (entry.index === null) {
+      await this.unsplitOutputFor(result.filename).append(result);
+      this.collectedRows += result.rows.length;
+      return;
     }
 
     const grouped = new Map<string, { value: unknown; rows: unknown[][] }>();
@@ -220,6 +260,9 @@ export class SplitAfterExport implements FolderExportOutput {
     }
     for (const group of this.groups.values()) {
       await group.output.flush(final, partial);
+    }
+    for (const output of this.unsplit.values()) {
+      await output.flush(final, partial);
     }
   }
 }

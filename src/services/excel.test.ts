@@ -70,9 +70,9 @@ it("builds stamped basenames with file only for single-file runs and folder for 
   expect(buildExportBasename({ runAt, folder: "DBNAS", wilayah: "9708" }))
     .toBe("20261014_1432_DBNAS_9708");
   expect(buildExportBasename({ runAt, folder: "Agregat/Kategori_A", wilayah: null }))
-    .toBe("20261014_1432_Agregat_Kategori_A_NAS");
+    .toBe("20261014_1432_Agregat_Kategori_A");
   expect(buildExportBasename({ runAt, folder: "DBNAS", file: "A/B: C?.sql", wilayah: "" }))
-    .toBe("20261014_1432_DBNAS_A_B__C_NAS");
+    .toBe("20261014_1432_DBNAS_A_B__C");
   const longFile = "T".repeat(100);
   expect(buildExportBasename({ runAt, folder: "DBNAS", file: longFile, wilayah: "35" }).split("_")[3])
     .toHaveLength(60);

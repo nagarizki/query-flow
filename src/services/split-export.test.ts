@@ -75,14 +75,20 @@ describe("split-after export", () => {
     expect(saved[0]?.results[0]?.rows).toHaveLength(2);
   });
 
-  it("fails fast when a later file lacks the split column, keeping prior groups partial", async () => {
-    const { output, saved } = setup();
+  it("saves a file unsplit instead of aborting when the split column is absent", async () => {
+    const saved: { path: string; results: QueryResult[] }[] = [];
+    const download = vi.fn(async (path: string, buffer: Uint8Array) => {
+      saved.push({ path, results: JSON.parse(new TextDecoder().decode(buffer)) as QueryResult[] });
+    });
+    const onFallback = vi.fn();
+    const output = new SplitAfterExport("20261014_1432_DBNAS", "kode_kab", { serialize, download, onFallback });
     await output.append(result("q1.sql", ["kode_kab", "nilai"], [["3507", 1]]));
-    expect(() => output.validateHeaders("q3.sql", ["kode_kab", "lain"])).not.toThrow();
-    await expect(output.append(result("q3.sql", ["kab", "nilai"], [["3507", 2]]))).rejects.toThrow(/q3\.sql/);
-    await output.flush(true, true);
-    expect(saved).toHaveLength(1);
-    expect(saved[0]?.path).toMatch(/_partial$/);
+    await expect(output.append(result("q3.sql", ["kab", "nilai"], [["3507", 2]]))).resolves.toBeUndefined();
+    expect(onFallback).toHaveBeenCalledWith(expect.stringMatching(/q3\.sql/));
+    await output.flush(true);
+    expect(saved.some((entry) => entry.path.includes("unsplit"))).toBe(true);
+    expect(saved.find((entry) => entry.path.includes("unsplit"))?.results[0]?.rows).toEqual([["3507", 2]]);
+    expect(output.totalRows).toBe(2);
   });
 
   it("rejects changing headers during pagination of the same file", async () => {

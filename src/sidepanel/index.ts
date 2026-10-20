@@ -506,6 +506,7 @@ function renderGroups(): void {
       let currentOutput: FolderExportOutput | null = null;
       let currentPrefix = "";
       const completedFiles: string[] = [];
+      const outcomes: FileOutcome[] = [];
       try {
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
@@ -524,8 +525,12 @@ function renderGroups(): void {
             const provPrefix = target.code ? `${target.label} [${targetIndex + 1}/${hematTargets.length}] - ` : "";
             currentPrefix = provPrefix;
             const exportPath = buildExportBasename({ runAt, folder: group.path, wilayah: target.code });
-            const output = new SplitAfterExport(exportPath, folderRunCfg.splitColumn, { keepCombined: folderRunCfg.keepCombined });
+            const output = new SplitAfterExport(exportPath, folderRunCfg.splitColumn, {
+              keepCombined: folderRunCfg.keepCombined,
+              onFallback: (message) => { batchStatus.textContent = `${provPrefix}${message}`; },
+            });
             currentOutput = output;
+            let partialOutput = false;
             for (const [index, file] of group.files.entries()) {
               if (batchStopRequested) throw new Error("Run Folder dihentikan oleh pengguna.");
               if (index > 0) {
@@ -533,7 +538,8 @@ function renderGroups(): void {
                 if (!continued) throw new Error("Run Folder dihentikan oleh pengguna.");
               }
               batchStatus.textContent = `${provPrefix}File ${index + 1}/${group.files.length}: ${file.name} — menunggu hasil (hemat, pisah per ${folderRunCfg.splitColumn}). Tetap buka panel dan tab query ini.`;
-              await runOneFile(file, target.config, output, {
+              const label = `${provPrefix}${file.name}`;
+              const outcome = await runFileIsolated(file, target.config, output, {
                 tabId: tab.id!,
                 signal: batchController.signal,
                 isStopped: () => batchStopRequested,
@@ -547,18 +553,20 @@ function renderGroups(): void {
                 untrackRun: (runId) => {
                   runProgressTargets.delete(runId);
                 },
-              });
-              completedFiles.push(`${provPrefix}${file.name}`);
+              }, label, (message) => { batchStatus.textContent = message; });
+              outcomes.push(outcome);
+              partialOutput = partialOutput || leftPartialRows(outcome);
+              completedFiles.push(label);
             }
             batchStatus.textContent = `${provPrefix}Menulis Excel akhir: ${output.groupCount} kab/kota · ${output.totalRows.toLocaleString("id-ID")} baris terkumpul…`;
-            await output.flush(true);
+            await output.flush(true, partialOutput);
             totalKabCount += output.groupCount;
             totalRowCount += output.totalRows;
             totalPartsCount += output.parts;
           }
-          batchStatus.textContent = hematTargets.length > 1
+          batchStatus.textContent = (hematTargets.length > 1
             ? `Selesai (hemat): ${hematTargets.length} provinsi × ${group.files.length} file → ${totalKabCount} file kab/kota · ${totalRowCount.toLocaleString("id-ID")} baris · ${totalPartsCount} file Excel diunduh.`
-            : `Selesai (hemat): ${group.files.length} file × 1 query gabungan → ${totalKabCount} file kab/kota · ${totalRowCount.toLocaleString("id-ID")} baris · ${totalPartsCount} file Excel diunduh.`;
+            : `Selesai (hemat): ${group.files.length} file × 1 query gabungan → ${totalKabCount} file kab/kota · ${totalRowCount.toLocaleString("id-ID")} baris · ${totalPartsCount} file Excel diunduh.`) + summarizeOutcomes(outcomes);
           return;
         }
         for (const [targetIndex, wilayahTarget] of targets.entries()) {
@@ -573,6 +581,7 @@ function renderGroups(): void {
           currentOutput = output;
           const provPrefix = wilayahTarget.code ? `${wilayahTarget.label} [${targetIndex + 1}/${targets.length}] - ` : "";
           currentPrefix = provPrefix;
+          let partialOutput = false;
           for (const [index, file] of group.files.entries()) {
             if (batchStopRequested) throw new Error("Run Folder dihentikan oleh pengguna.");
             if (index > 0) {
@@ -580,7 +589,7 @@ function renderGroups(): void {
               if (!continued) throw new Error("Run Folder dihentikan oleh pengguna.");
             }
             batchStatus.textContent = `${provPrefix}File ${index + 1}/${group.files.length}: ${file.name} — menunggu hasil. Tetap buka panel dan tab query ini.`;
-            await runOneFile(file, activeConfig, output, {
+            const outcome = await runFileIsolated(file, activeConfig, output, {
               tabId: tab.id!,
               signal: batchController.signal,
               isStopped: () => batchStopRequested,
@@ -595,15 +604,17 @@ function renderGroups(): void {
                 runProgressTargets.delete(runId);
                 // Keep the Stop action available between files and while exporting.
               },
-            });
+            }, `${provPrefix}${file.name}`, (message) => { batchStatus.textContent = message; });
+            outcomes.push(outcome);
+            partialOutput = partialOutput || leftPartialRows(outcome);
             completedFiles.push(`${provPrefix}${file.name}`);
           }
           batchStatus.textContent = `${provPrefix}Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
-          await output.flush(true);
+          await output.flush(true, partialOutput);
         }
-        batchStatus.textContent = targets.length > 1
+        batchStatus.textContent = (targets.length > 1
           ? `Selesai: ${targets.length} ${targets[0]?.kind === "kab" ? "kabupaten/kota" : "provinsi"} berhasil diproses.`
-          : `Selesai: ${currentOutput?.totalRows.toLocaleString("id-ID") ?? 0} baris · ${currentOutput?.parts ?? 0} file Excel diunduh.`;
+          : `Selesai: ${currentOutput?.totalRows.toLocaleString("id-ID") ?? 0} baris · ${currentOutput?.parts ?? 0} file Excel diunduh.`) + summarizeOutcomes(outcomes);
       } catch (error) {
         batchStatus.textContent = currentOutput
           ? `${currentPrefix}${await finishPartial(currentOutput, error)}${describeCompleted(completedFiles)}`
@@ -713,10 +724,13 @@ function renderGroups(): void {
               const provPrefix = target.code ? `${target.label} [${targetIndex + 1}/${hematTargets.length}] - ` : "";
               currentPrefix = provPrefix;
               const exportPath = buildExportBasename({ runAt, folder: group.path, file: file.name, wilayah: target.code });
-              const output = new SplitAfterExport(exportPath, fileRunCfg.splitColumn, { keepCombined: fileRunCfg.keepCombined });
+              const output = new SplitAfterExport(exportPath, fileRunCfg.splitColumn, {
+                keepCombined: fileRunCfg.keepCombined,
+                onFallback: (message) => { status.textContent = `${provPrefix}${message}`; },
+              });
               currentOutput = output;
               status.textContent = `${provPrefix}Mengirim SQL ke editor aktif (hemat, pisah per ${fileRunCfg.splitColumn})...`;
-              await runOneFile(file, target.config, output, {
+              await runFileIsolated(file, target.config, output, {
                 tabId: tab.id!,
                 signal: controller.signal,
                 isStopped: () => stopRequested,
@@ -730,7 +744,7 @@ function renderGroups(): void {
                 untrackRun: (runId) => {
                   runProgressTargets.delete(runId);
                 },
-              });
+              }, `${provPrefix}${file.name}`, (message) => { status.textContent = message; });
               status.textContent = `${provPrefix}Menulis Excel akhir: ${output.groupCount} kab/kota · ${output.totalRows.toLocaleString("id-ID")} baris terkumpul…`;
               await output.flush(true);
               totalKabCount += output.groupCount;
@@ -755,7 +769,7 @@ function renderGroups(): void {
             const provPrefix = wilayahTarget.code ? `${wilayahTarget.label} [${targetIndex + 1}/${targets.length}] - ` : "";
             currentPrefix = provPrefix;
             status.textContent = `${provPrefix}Mengirim SQL ke editor aktif...`;
-            await runOneFile(file, activeConfig, output, {
+            await runFileIsolated(file, activeConfig, output, {
               tabId: tab.id!,
               signal: controller.signal,
               isStopped: () => stopRequested,
@@ -769,7 +783,7 @@ function renderGroups(): void {
               untrackRun: (runId) => {
                 runProgressTargets.delete(runId);
               },
-            });
+            }, `${provPrefix}${file.name}`, (message) => { status.textContent = message; });
             status.textContent = `${provPrefix}Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
             await output.flush(true);
           }
@@ -868,6 +882,7 @@ async function runSelected(): Promise<void> {
   let doneFiles = 0;
   let hematFiles = 0;
   const doneNames: string[] = [];
+  const outcomes: FileOutcome[] = [];
   const paceSelection = (message: (text: string) => void, gapMs = FILE_GAP_MS): Promise<boolean> =>
     sleepPaced(gapMs, selectionController.signal, () => selectionStopRequested, message, "");
   try {
@@ -897,10 +912,13 @@ async function runSelected(): Promise<void> {
             const provPrefix = target.code ? `${target.label} [${targetIndex + 1}/${hematTargets.length}] - ` : "";
             currentPrefix = provPrefix;
             const exportPath = buildExportBasename({ runAt, folder: folderOf(file.path), file: file.name, wilayah: target.code });
-            const output = new SplitAfterExport(exportPath, fileCfg.splitColumn, { keepCombined: fileCfg.keepCombined });
+            const output = new SplitAfterExport(exportPath, fileCfg.splitColumn, {
+              keepCombined: fileCfg.keepCombined,
+              onFallback: (message) => { statusEl.textContent = `${provPrefix}${message}`; },
+            });
             currentOutput = output;
             statusEl.textContent = `${provPrefix}File ${index + 1}/${files.length}: ${file.path} — menunggu hasil (hemat, pisah per ${fileCfg.splitColumn}).`;
-            await runOneFile(file, target.config, output, {
+            const outcome = await runFileIsolated(file, target.config, output, {
               tabId: tab.id!,
               signal: selectionController.signal,
               isStopped: () => selectionStopRequested,
@@ -912,9 +930,10 @@ async function runSelected(): Promise<void> {
                 });
               },
               untrackRun: (runId) => { runProgressTargets.delete(runId); },
-            });
+            }, `${provPrefix}${file.path}`, (message) => { statusEl.textContent = message; });
+            outcomes.push(outcome);
             statusEl.textContent = `${provPrefix}Menulis Excel akhir (${file.name}): ${output.groupCount} kab/kota · ${output.totalRows.toLocaleString("id-ID")} baris…`;
-            await output.flush(true);
+            await output.flush(true, leftPartialRows(outcome));
           }
           doneFiles++;
           hematFiles++;
@@ -931,7 +950,7 @@ async function runSelected(): Promise<void> {
           const output = new ChunkedExport(exportPath);
           currentOutput = output;
           currentPrefix = targetPrefix;
-          await runOneFile(file, innerTarget.config, output, {
+          const outcome = await runFileIsolated(file, innerTarget.config, output, {
             tabId: tab.id!,
             signal: selectionController.signal,
             isStopped: () => selectionStopRequested,
@@ -943,11 +962,12 @@ async function runSelected(): Promise<void> {
               });
             },
             untrackRun: (runId) => { runProgressTargets.delete(runId); },
-          });
+          }, `${targetPrefix}${file.path}`, (message) => { statusEl.textContent = message; });
+          outcomes.push(outcome);
           doneFiles++;
           doneNames.push(`${targetPrefix}${file.path}`);
           statusEl.textContent = `${targetPrefix}Menulis Excel akhir (${file.name}): ${output.totalRows.toLocaleString("id-ID")} baris terkumpul…`;
-          await output.flush(true);
+          await output.flush(true, leftPartialRows(outcome));
         }
       }
     } else for (const [targetIndex, wilayahTarget] of targets.entries()) {
@@ -965,6 +985,7 @@ async function runSelected(): Promise<void> {
           currentOutput = output;
           currentPrefix = targetPrefix;
           const folderLabel = `${bucket.folder} [${bucketIndex + 1}/${folderBuckets.length}]`;
+          let bucketPartial = false;
           for (const [index, file] of bucket.files.entries()) {
             if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
             if (index > 0 || bucketIndex > 0 || targetIndex > 0) {
@@ -972,7 +993,7 @@ async function runSelected(): Promise<void> {
               if (!continued) throw new Error("Run Terpilih dihentikan oleh pengguna.");
             }
             statusEl.textContent = `${targetPrefix}${folderLabel} File ${index + 1}/${bucket.files.length}: ${file.path} — menunggu hasil. Tetap buka panel dan tab query ini.`;
-            await runOneFile(file, wilayahTarget.config, output, {
+            const outcome = await runFileIsolated(file, wilayahTarget.config, output, {
               tabId: tab.id!,
               signal: selectionController.signal,
               isStopped: () => selectionStopRequested,
@@ -984,18 +1005,21 @@ async function runSelected(): Promise<void> {
                 });
               },
               untrackRun: (runId) => { runProgressTargets.delete(runId); },
-            });
+            }, `${targetPrefix}${file.path}`, (message) => { statusEl.textContent = message; });
+            outcomes.push(outcome);
+            bucketPartial = bucketPartial || leftPartialRows(outcome);
             doneFiles++;
             doneNames.push(`${targetPrefix}${file.path}`);
           }
           statusEl.textContent = `${targetPrefix}${folderLabel}: Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul…`;
-          await output.flush(true);
+          await output.flush(true, bucketPartial);
         }
       } else if (combine) {
         const exportPath = buildExportBasename({ runAt, folder: folderOf(files[0]?.path ?? "seleksi"), file: `gabungan_${files.length}file`, wilayah: wilayahTarget.code });
         const output = new ChunkedExport(exportPath);
         currentOutput = output;
         currentPrefix = targetPrefix;
+        let combinedPartial = false;
         for (const [index, file] of files.entries()) {
           if (selectionStopRequested) throw new Error("Run Terpilih dihentikan oleh pengguna.");
           if (index > 0 || targetIndex > 0) {
@@ -1003,7 +1027,7 @@ async function runSelected(): Promise<void> {
             if (!continued) throw new Error("Run Terpilih dihentikan oleh pengguna.");
           }
           statusEl.textContent = `${targetPrefix}File ${index + 1}/${files.length}: ${file.path} — menunggu hasil. Tetap buka panel dan tab query ini.`;
-          await runOneFile(file, wilayahTarget.config, output, {
+          const outcome = await runFileIsolated(file, wilayahTarget.config, output, {
             tabId: tab.id!,
             signal: selectionController.signal,
             isStopped: () => selectionStopRequested,
@@ -1015,19 +1039,21 @@ async function runSelected(): Promise<void> {
               });
             },
             untrackRun: (runId) => { runProgressTargets.delete(runId); },
-          });
+          }, `${targetPrefix}${file.path}`, (message) => { statusEl.textContent = message; });
+          outcomes.push(outcome);
+          combinedPartial = combinedPartial || leftPartialRows(outcome);
           doneFiles++;
           doneNames.push(`${targetPrefix}${file.path}`);
         }
         statusEl.textContent = `${targetPrefix}Menulis Excel akhir: ${output.totalRows.toLocaleString("id-ID")} baris terkumpul, ${output.parts} bagian sudah tersimpan…`;
-        await output.flush(true);
+        await output.flush(true, combinedPartial);
       }
     }
     const looped = targets.length > 1 && hematFiles < doneFiles;
     const unit = targets[0]?.kind === "kab" ? "kabupaten/kota" : "provinsi";
-    statusEl.textContent = looped
+    statusEl.textContent = (looped
       ? `Selesai: ${doneFiles} file × ${targets.length} ${unit} berhasil diproses.`
-      : `Selesai: ${doneFiles} file berhasil diproses · ${currentOutput?.totalRows.toLocaleString("id-ID") ?? 0} baris · ${currentOutput?.parts ?? 0} file Excel diunduh.`;
+      : `Selesai: ${doneFiles} file berhasil diproses · ${currentOutput?.totalRows.toLocaleString("id-ID") ?? 0} baris · ${currentOutput?.parts ?? 0} file Excel diunduh.`) + summarizeOutcomes(outcomes);
   } catch (error) {
     statusEl.textContent = currentOutput
       ? `${currentPrefix}${await finishPartial(currentOutput, error)}${describeCompleted(doneNames)}`
@@ -1127,6 +1153,61 @@ function describeCompleted(completed: string[]): string {
   return completed.length > 0
     ? ` File selesai sebelum gagal (${completed.length}): ${completed.slice(-10).join(", ")}${completed.length > 10 ? ", …" : ""}. Untuk lanjutkan, seleksi sisa file via checkbox lalu Run Terpilih.`
     : "";
+}
+
+/** Per-file result inside a batch; keeps one bad query from ending the run. */
+interface FileOutcome {
+  label: string;
+  status: "ok" | "empty" | "failed";
+  rows: number;
+  error?: string;
+}
+
+/** A failed file left rows behind, so its workbook must be marked _partial. */
+function leftPartialRows(outcome: FileOutcome): boolean {
+  return outcome.status === "failed" && outcome.rows > 0;
+}
+
+/**
+ * Only these errors must end the whole batch: the user pressed Stop, the SQL
+ * Lab environment is unusable for every file, or the DB rate limit survived
+ * every retry. Everything else (bad SQL, missing split column, chunk timeout)
+ * is isolated to the file that caused it.
+ */
+function isFatalRunError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /dihentikan oleh pengguna|aktifkan tab fasih sql lab|state hasil sql lab belum dikenali|pilih satu tab query sql lab|editor sql lab belum dapat diakses|429|too many requests|batas db/i.test(message);
+}
+
+async function runFileIsolated(
+  file: SqlFile,
+  activeConfig: WilayahConfig,
+  output: FolderExportOutput,
+  hooks: QueueFileHooks,
+  label: string,
+  onStatus: (message: string) => void,
+): Promise<FileOutcome> {
+  const rowsBefore = output.totalRows;
+  try {
+    await runOneFile(file, activeConfig, output, hooks);
+    const rows = output.totalRows - rowsBefore;
+    return { label, status: rows > 0 ? "ok" : "empty", rows };
+  } catch (error) {
+    if (isFatalRunError(error)) throw error;
+    const message = error instanceof Error ? error.message : "Run gagal.";
+    onStatus(`${label} — dilewati, lanjut file berikutnya: ${message}`);
+    return { label, status: "failed", rows: output.totalRows - rowsBefore, error: message };
+  }
+}
+
+function summarizeOutcomes(outcomes: FileOutcome[]): string {
+  const ok = outcomes.filter((outcome) => outcome.status === "ok").length;
+  const empty = outcomes.filter((outcome) => outcome.status === "empty");
+  const failed = outcomes.filter((outcome) => outcome.status === "failed");
+  const parts = [`${ok} berisi data`];
+  if (empty.length) parts.push(`${empty.length} tanpa data (${empty.slice(0, 8).map((outcome) => outcome.label).join(", ")}${empty.length > 8 ? ", …" : ""})`);
+  if (failed.length) parts.push(`${failed.length} gagal (${failed.slice(0, 8).map((outcome) => outcome.label).join(", ")}${failed.length > 8 ? ", …" : ""})`);
+  return ` ${parts.join(" · ")}.`;
 }
 
 function formatRunProgress(progress: SqlRunProgress): string {

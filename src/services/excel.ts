@@ -149,7 +149,7 @@ export interface ExportBasenameOptions {
   file?: string;
   /** Table title/basename; legacy alias for file. */
   table?: string;
-  /** Region code as-is (2-4 digits); null/empty renders as NAS. */
+  /** Region code as-is (2-4 digits); omitted when null/empty. */
   wilayah?: string | null;
 }
 
@@ -181,14 +181,15 @@ export function buildSplitBase(runAt: Date, folder: string, file?: string): stri
 }
 
 /**
- * YYYYMMDD_HHMM_FOLDER[_FILE]_WILAYAH without extension or _part/_partial
+ * YYYYMMDD_HHMM_FOLDER[_FILE][_WILAYAH] without extension or _part/_partial
  * suffixes (those stay appended last by ChunkedExport.drain so lexical sort
  * stays chronological). Single-file runs pass file; folder runs omit it.
  */
 export function buildExportBasename(options: ExportBasenameOptions): string {
   const fileSegment = options.file ?? options.table;
   const wilayah = options.wilayah ? sanitizeBasenameSegment(options.wilayah, 40) : "";
-  return `${buildSplitBase(options.runAt, options.folder, fileSegment)}_${wilayah || "NAS"}`;
+  const base = buildSplitBase(options.runAt, options.folder, fileSegment);
+  return wilayah ? `${base}_${wilayah}` : base;
 }
 
 export function workbookFilename(path: string): string {

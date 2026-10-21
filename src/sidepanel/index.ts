@@ -96,7 +96,7 @@ app.innerHTML = `
           <ul>
             <li>Tombol <strong>Run</strong> berubah menjadi <strong>Stop</strong> selama query berjalan.</li>
             <li>Editor SQL aktif akan diganti. Side panel harus tetap terbuka; tab SQL Lab boleh tidak terlihat, tapi jangan ditutup atau dipakai menjalankan query lain.</li>
-            <li>QueryFlow memberi jeda ±2,5 dtk antar query/chunk, ±3 dtk antar file, ±5 dtk antar wilayah agar di bawah batas DB <strong>30 query/menit</strong>. Kena 429 ditunggu otomatis ±65 dtk lalu dilanjut dari baris yang sama (maks 5x).</li>
+            <li>QueryFlow memberi jeda ±2,5 dtk antar query/chunk, ±1,5 dtk antar file, ±5 dtk antar wilayah agar di bawah batas DB <strong>30 query/menit</strong>. Kena 429 ditunggu otomatis ±65 dtk lalu dilanjut dari baris yang sama (maks 5x).</li>
             <li><strong>Stop</strong> atau error tetap mengunduh hasil yang sudah terkumpul sebagai Excel parsial; nama file yang sudah selesai ikut ditampilkan agar sisa file mudah diseleksi ulang via checkbox → Run Terpilih.</li>
             <li><strong>Hemat request</strong> (aktif per folder): 1 query gabungan per SQL lalu hasil dipisah per nilai kolom (default <strong>kode_kabupaten</strong>) menjadi 1 file Excel per kab/kota. Kolom wajib ada di semua SQL terpilih; gabung (<strong>Gabung 1 Excel</strong>) tetap memakai loop per wilayah.</li>
             <li>Nama file <strong>TGL_JAM_Folder_File_Wilayah</strong> (atau <strong>TGL_JAM_Folder_Wilayah</strong> untuk gabungan folder), mis. <strong>20261014_1432_DBNAS_JumlahPerFlag_9708.xlsx</strong>; hasil besar pecah <strong>_part-001</strong>, gagal/Stop jadi <strong>_partial</strong>.</li>
@@ -1134,7 +1134,7 @@ function createRunId(): string {
  * file/target agar laju query tetap di bawah limit, plus jeda antar chunk
  * sudah ditangani di collectQuery. Abortable agar Stop tetap responsif.
  */
-const FILE_GAP_MS = 3000;
+const FILE_GAP_MS = 1500;
 const TARGET_GAP_MS = 5000;
 
 function sleepPaced(ms: number, signal: AbortSignal, isStopped: () => boolean, report: (message: string) => void, label: string): Promise<boolean> {

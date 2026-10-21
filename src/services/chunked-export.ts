@@ -1,5 +1,6 @@
 import { serializeWorkbook, downloadWorkbook, type QueryResult } from "./excel";
 import type { SqlChunkResponse } from "../types";
+import { dbRateLimiter, sleepAbortable, type RateLimiter } from "./rate-limiter";
 
 export const MAX_EXPORT_BYTES = 300 * 1024 * 1024;
 /** Flush buffered rows to disk when reaching Excel worksheet limit (1M rows) or user split threshold. */
@@ -121,17 +122,8 @@ export interface CollectQueryOptions {
   rateLimitRetries?: number;
   /** Base delay for rate-limit retries. Defaults to 65000 ms. */
   rateLimitDelayMs?: number;
-}
-
-function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
-    const onAbort = (): void => { cleanup(); reject(new Error("Run dihentikan oleh pengguna.")); };
-    const cleanup = (): void => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); };
-    if (signal?.aborted) { onAbort(); return; }
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
+  /** Global rate limiter for DB requests. Defaults to dbRateLimiter (or null when minIntervalMs is 0). */
+  limiter?: RateLimiter | null;
 }
 
 /** Retry size failures at the same offset; advance only after a chunk is accepted. */
@@ -148,6 +140,9 @@ export async function collectQuery(
   const minInterval = options.minIntervalMs ?? MIN_CHUNK_INTERVAL_MS;
   const maxRateLimit = options.rateLimitRetries ?? 5;
   const rateLimitDelay = options.rateLimitDelayMs ?? RATE_LIMIT_DELAY_MS;
+  const limiter = options.limiter !== undefined
+    ? options.limiter
+    : (options.minIntervalMs === 0 ? null : dbRateLimiter);
   let offset = 0;
   let limit = 9000;
   let iteration = 1;
@@ -155,10 +150,16 @@ export async function collectQuery(
   let rateLimitAttempts = 0;
   let firstRequest = true;
   while (!stopped()) {
-    // Pacing: jangan tembak query berikutnya seketika. 30 query/menit =
-    // minimal ~2 dtk antar query; default 2,5 dtk memberi margin aman.
-    // Dikecualikan untuk request pertama agar single-row run tetap responsif.
-    if (!firstRequest && minInterval > 0) {
+    if (limiter) {
+      try {
+        await limiter.acquire(signal, (waitMs) => {
+          report(`Menunggu antrean DB (${(waitMs / 1000).toFixed(1)} dtk) agar aman di bawah limit 30 query/menit…`);
+        });
+      } catch {
+        throw new Error("Run dihentikan oleh pengguna.");
+      }
+      if (stopped()) break;
+    } else if (!firstRequest && minInterval > 0) {
       try {
         await sleepAbortable(minInterval, signal);
       } catch {
@@ -195,6 +196,7 @@ export async function collectQuery(
       if (RATE_LIMIT_ERROR.test(response.message) && rateLimitAttempts < maxRateLimit) {
         rateLimitAttempts++;
         transientAttempts = 0;
+        limiter?.noteRateLimited();
         const waitSec = Math.round((rateLimitDelay * rateLimitAttempts) / 1000);
         report(`Kena batas DB (30 query/menit). Jeda ${waitSec} dtk lalu lanjut otomatis dari baris ${offset + 1} (percobaan ${rateLimitAttempts}/${maxRateLimit}). Jangan Stop/tab lain…`);
         await sleepAbortable(rateLimitDelay * rateLimitAttempts, signal);
@@ -213,6 +215,7 @@ export async function collectQuery(
       }
       throw new Error(response.message);
     }
+    limiter?.noteSuccess();
     // An empty page means "no data". On the first page that is a successful
     // result, never a batch error, so long-run folders keep going. Only a
     // header can become a workbook; a query without a result set is skipped.
